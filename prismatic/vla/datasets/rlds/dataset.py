@@ -8,6 +8,7 @@ import copy
 import inspect
 import json
 from functools import partial
+from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple, Union
 
 import dlimp as dl
@@ -33,6 +34,18 @@ overwatch = initialize_overwatch(__name__)
 
 # Configure Tensorflow with *no GPU devices* (to prevent clobber with PyTorch)
 tf.config.set_visible_devices([], "GPU")
+
+
+def _get_tfds_builder(name: str, data_dir: str) -> tfds.core.DatasetBuilder:
+    """Load registered TFDS builders or self-contained builders written to disk."""
+    try:
+        return tfds.builder(name, data_dir=data_dir)
+    except Exception:
+        dataset_dir = Path(data_dir) / name
+        builder_dirs = sorted(path.parent for path in dataset_dir.glob("*/dataset_info.json"))
+        if not builder_dirs:
+            raise
+        return tfds.builder_from_directory(str(builder_dirs[-1]))
 
 
 # ruff: noqa: B006
@@ -199,7 +212,7 @@ def make_dataset_from_rlds(
 
         return traj
 
-    builder = tfds.builder(name, data_dir=data_dir)
+    builder = _get_tfds_builder(name, data_dir)
 
     # load or compute dataset statistics
     if isinstance(dataset_statistics, str):
@@ -231,7 +244,10 @@ def make_dataset_from_rlds(
         dataset_statistics["action"]["mask"] = np.array(action_normalization_mask)
 
     # construct the dataset
-    split = "train" if train else "val"
+    if train:
+        split = "train"
+    else:
+        split = "val" if "val" in builder.info.splits else "validation"
 
     dataset = dl.DLataset.from_rlds(builder, split=split, shuffle=shuffle, num_parallel_reads=num_parallel_reads)
 

@@ -846,6 +846,11 @@ def aloha_dataset_transform(trajectory: Dict[str, Any]) -> Dict[str, Any]:
     return trajectory
 
 
+def so101_dataset_transform(trajectory: Dict[str, Any]) -> Dict[str, Any]:
+    """SO-101 RLDS data is already stored as absolute 6D joint positions."""
+    return trajectory
+
+
 # === Registry ===
 OXE_STANDARDIZATION_TRANSFORMS = {
     "bridge_oxe": bridge_oxe_dataset_transform,
@@ -930,4 +935,6 @@ OXE_STANDARDIZATION_TRANSFORMS = {
     "aloha1_fold_shirt_30_demos": aloha_dataset_transform,
     "aloha1_scoop_X_into_bowl_45_demos": aloha_dataset_transform,
     "aloha1_put_X_into_pot_300_demos": aloha_dataset_transform,
+    ### SO-101 fine-tuning datasets
+    "so101_block_into_cup_50_v5": so101_dataset_transform,
 }

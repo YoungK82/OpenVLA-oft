@@ -37,6 +37,13 @@ ALOHA_CONSTANTS = {
     "ACTION_PROPRIO_NORMALIZATION_TYPE": NormalizationType.BOUNDS,
 }
 
+SO101_CONSTANTS = {
+    "NUM_ACTIONS_CHUNK": 30,
+    "ACTION_DIM": 6,
+    "PROPRIO_DIM": 6,
+    "ACTION_PROPRIO_NORMALIZATION_TYPE": NormalizationType.BOUNDS,
+}
+
 BRIDGE_CONSTANTS = {
     "NUM_ACTIONS_CHUNK": 5,
     "ACTION_DIM": 7,
@@ -53,6 +60,8 @@ def detect_robot_platform():
         return "LIBERO"
     elif "aloha" in cmd_args:
         return "ALOHA"
+    elif "so101" in cmd_args:
+        return "SO101"
     elif "bridge" in cmd_args:
         return "BRIDGE"
     else:
@@ -68,6 +77,8 @@ if ROBOT_PLATFORM == "LIBERO":
     constants = LIBERO_CONSTANTS
 elif ROBOT_PLATFORM == "ALOHA":
     constants = ALOHA_CONSTANTS
+elif ROBOT_PLATFORM == "SO101":
+    constants = SO101_CONSTANTS
 elif ROBOT_PLATFORM == "BRIDGE":
     constants = BRIDGE_CONSTANTS
 

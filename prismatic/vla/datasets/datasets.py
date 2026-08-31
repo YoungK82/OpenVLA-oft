@@ -77,13 +77,19 @@ class RLDSBatchTransform:
 
         # Add additional inputs
         if self.use_wrist_image:
-            all_wrist_pixels = []
-            for k in rlds_batch["observation"].keys():
-                if "wrist" in k:
-                    img_wrist = Image.fromarray(rlds_batch["observation"][k][0])
-                    pixel_values_wrist = self.image_transform(img_wrist)
-                    all_wrist_pixels.append(pixel_values_wrist)
-            return_dict["pixel_values_wrist"] = torch.cat(all_wrist_pixels, dim=0)
+            observation = rlds_batch["observation"]
+            preferred_keys = ("image_secondary", "image_wrist", "image_left_wrist", "image_right_wrist")
+            additional_image_keys = [key for key in preferred_keys if key in observation]
+            additional_image_keys.extend(
+                key
+                for key in observation
+                if key.startswith("image_") and key != "image_primary" and key not in additional_image_keys
+            )
+            additional_pixels = [
+                self.image_transform(Image.fromarray(observation[key][0])) for key in additional_image_keys
+            ]
+            if additional_pixels:
+                return_dict["pixel_values_wrist"] = torch.cat(additional_pixels, dim=0)
         if self.use_proprio and "proprio" in rlds_batch["observation"]:
             proprio = rlds_batch["observation"]["proprio"]
             return_dict["proprio"] = proprio
@@ -115,6 +121,8 @@ class RLDSDataset(IterableDataset):
         # fmt: off
         if "aloha" in self.data_mix:
             load_camera_views = ("primary", "left_wrist", "right_wrist")
+        elif "so101" in self.data_mix:
+            load_camera_views = ("primary", "secondary", "wrist")
         else:
             load_camera_views = ("primary", "wrist")
 
