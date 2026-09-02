@@ -52,35 +52,52 @@ BRIDGE_CONSTANTS = {
 }
 
 
-# Function to detect robot platform from command line arguments
-def detect_robot_platform():
-    cmd_args = " ".join(sys.argv).lower()
+ROBOT_CONSTANTS = {
+    "LIBERO": LIBERO_CONSTANTS,
+    "ALOHA": ALOHA_CONSTANTS,
+    "SO101": SO101_CONSTANTS,
+    "BRIDGE": BRIDGE_CONSTANTS,
+}
 
-    if "libero" in cmd_args:
-        return "LIBERO"
-    elif "aloha" in cmd_args:
-        return "ALOHA"
-    elif "so101" in cmd_args:
-        return "SO101"
-    elif "bridge" in cmd_args:
-        return "BRIDGE"
-    else:
-        # Default to LIBERO if unclear
-        return "LIBERO"
+
+def _get_cli_arg_value(flag: str):
+    """Return a CLI value passed as either ``--flag value`` or ``--flag=value``."""
+    for index, argument in enumerate(sys.argv[1:]):
+        if argument == flag and index + 2 <= len(sys.argv[1:]):
+            return sys.argv[index + 2]
+        if argument.startswith(f"{flag}="):
+            return argument.split("=", maxsplit=1)[1]
+    return None
+
+
+def detect_robot_platform():
+    """Resolve robot constants before modules that depend on their tensor shapes are imported."""
+    explicit_platform = _get_cli_arg_value("--robot_platform")
+    if explicit_platform is not None and explicit_platform.lower() != "auto":
+        platform = explicit_platform.upper().replace("-", "")
+        if platform not in ROBOT_CONSTANTS:
+            raise ValueError(
+                f"Unsupported --robot_platform={explicit_platform!r}; choose one of "
+                f"{sorted(ROBOT_CONSTANTS)} or 'auto'."
+            )
+        return platform
+
+    # Backward compatibility for existing commands. Prefer matching the dataset argument rather than arbitrary paths.
+    dataset_name = _get_cli_arg_value("--dataset_name") or _get_cli_arg_value("--unnorm_key") or ""
+    dataset_name = str(dataset_name).lower()
+    for marker, platform in (("so101", "SO101"), ("aloha", "ALOHA"), ("libero", "LIBERO"), ("bridge", "BRIDGE")):
+        if marker in dataset_name:
+            return platform
+
+    # Existing LIBERO commands rely on this default.
+    return "LIBERO"
 
 
 # Determine which robot platform to use
 ROBOT_PLATFORM = detect_robot_platform()
 
 # Set the appropriate constants based on the detected platform
-if ROBOT_PLATFORM == "LIBERO":
-    constants = LIBERO_CONSTANTS
-elif ROBOT_PLATFORM == "ALOHA":
-    constants = ALOHA_CONSTANTS
-elif ROBOT_PLATFORM == "SO101":
-    constants = SO101_CONSTANTS
-elif ROBOT_PLATFORM == "BRIDGE":
-    constants = BRIDGE_CONSTANTS
+constants = ROBOT_CONSTANTS[ROBOT_PLATFORM]
 
 # Assign constants to global variables
 NUM_ACTIONS_CHUNK = constants["NUM_ACTIONS_CHUNK"]
@@ -94,4 +111,4 @@ print(f"  NUM_ACTIONS_CHUNK = {NUM_ACTIONS_CHUNK}")
 print(f"  ACTION_DIM = {ACTION_DIM}")
 print(f"  PROPRIO_DIM = {PROPRIO_DIM}")
 print(f"  ACTION_PROPRIO_NORMALIZATION_TYPE = {ACTION_PROPRIO_NORMALIZATION_TYPE}")
-print("If needed, manually set the correct constants in `prismatic/vla/constants.py`!")
+print("Use --robot_platform to select a platform explicitly when launching training or deployment.")

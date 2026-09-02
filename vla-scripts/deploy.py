@@ -36,7 +36,15 @@ from experiments.robot.openvla_utils import (
 from experiments.robot.robot_utils import (
     get_image_resize_size,
 )
-from prismatic.vla.constants import ACTION_DIM, ACTION_TOKEN_BEGIN_IDX, IGNORE_INDEX, NUM_ACTIONS_CHUNK, PROPRIO_DIM, STOP_INDEX
+from prismatic.vla.constants import (
+    ACTION_DIM,
+    ACTION_TOKEN_BEGIN_IDX,
+    IGNORE_INDEX,
+    NUM_ACTIONS_CHUNK,
+    PROPRIO_DIM,
+    ROBOT_PLATFORM,
+    STOP_INDEX,
+)
 
 
 def get_openvla_prompt(instruction: str, openvla_path: Union[str, Path]) -> str:
@@ -120,6 +128,7 @@ class DeployConfig:
     #################################################################################################################
     model_family: str = "openvla"                    # Model family
     pretrained_checkpoint: Union[str, Path] = ""     # Pretrained checkpoint path
+    robot_platform: str = "auto"                     # Pass `so101` explicitly for SO-101 checkpoints
 
     use_l1_regression: bool = True                   # If True, uses continuous action head with L1 regression objective
     use_diffusion: bool = False                      # If True, uses continuous action head with diffusion modeling objective (DDIM)
@@ -148,6 +157,11 @@ class DeployConfig:
 
 @draccus.wrap()
 def deploy(cfg: DeployConfig) -> None:
+    requested_platform = cfg.robot_platform.upper().replace("-", "")
+    if requested_platform != "AUTO" and requested_platform != ROBOT_PLATFORM:
+        raise ValueError(f"Requested {requested_platform} constants, but {ROBOT_PLATFORM} constants were loaded.")
+    if ROBOT_PLATFORM == "SO101" and cfg.num_images_in_input != 3:
+        raise ValueError("SO-101 checkpoints expect front, top, and wrist images; set --num_images_in_input 3.")
     server = OpenVLAServer(cfg)
     server.run(cfg.host, port=cfg.port)
 

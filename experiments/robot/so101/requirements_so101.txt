@@ -1,0 +1,7 @@
+# Install this file in the SO-101 robot-client environment, separately from the GPU training environment.
+numpy<2
+lerobot>=0.4.0,<0.5.0
+imageio[ffmpeg]
+requests
+json_numpy
+draccus==0.8.0

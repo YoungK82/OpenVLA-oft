@@ -742,10 +742,19 @@ def get_vla_action(
     """
     with torch.inference_mode():
 
-        # Collect all input images
+        # Collect images in the exact order used during training. New robot clients should send an explicit
+        # ``additional_images`` list. The wrist-key fallback preserves the existing ALOHA client contract.
         all_images = [obs["full_image"]]
         if cfg.num_images_in_input > 1:
-            all_images.extend([obs[k] for k in obs.keys() if "wrist" in k])
+            if "additional_images" in obs:
+                all_images.extend(obs["additional_images"])
+            else:
+                all_images.extend([obs[k] for k in obs.keys() if "wrist" in k])
+        if len(all_images) != cfg.num_images_in_input:
+            raise ValueError(
+                f"Policy expects {cfg.num_images_in_input} images, but observation provided {len(all_images)}. "
+                "Send the primary view as 'full_image' and remaining ordered views as 'additional_images'."
+            )
 
         # Process images
         all_images = prepare_images_for_vla(all_images, cfg)
@@ -774,8 +783,7 @@ def get_vla_action(
         if cfg.use_proprio:
             proprio = obs["state"]
             proprio_norm_stats = vla.norm_stats[cfg.unnorm_key]["proprio"]
-            obs["state"] = normalize_proprio(proprio, proprio_norm_stats)
-            proprio = obs["state"]
+            proprio = normalize_proprio(proprio, proprio_norm_stats)
 
         # Generate action
         if action_head is None:
@@ -799,7 +807,7 @@ def get_vla_action(
 
 
 def get_action_from_server(
-    observation: Dict[str, Any], server_endpoint: str = "http://0.0.0.0:8777/act"
+    observation: Dict[str, Any], server_endpoint: str = "http://0.0.0.0:8777/act", timeout: float = 30.0
 ) -> Dict[str, Any]:
     """
     Get VLA action from remote inference server.
@@ -814,5 +822,7 @@ def get_action_from_server(
     response = requests.post(
         server_endpoint,
         json=observation,
+        timeout=timeout,
     )
+    response.raise_for_status()
     return response.json()

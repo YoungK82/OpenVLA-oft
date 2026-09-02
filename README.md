@@ -1,5 +1,7 @@
 # Fine-Tuning Vision-Language-Action Models: Optimizing Speed and Success
 
+Real-robot guides: [ALOHA](ALOHA.md) · [SO-101](SO101.md)
+
 **Project website: https://openvla-oft.github.io/**
 
 **Paper: https://arxiv.org/abs/2502.19645**

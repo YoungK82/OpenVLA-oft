@@ -15,20 +15,9 @@ import pyarrow.parquet as pq
 import tensorflow_datasets as tfds
 from PIL import Image
 
+from experiments.robot.so101.constants import ACTION_CHUNK_SIZE, CAMERA_FIELDS, CONTROL_FREQUENCY, JOINT_NAMES
+
 DATASET_NAME = "so101_block_into_cup_50_v5"
-JOINT_NAMES = (
-    "shoulder_pan.pos",
-    "shoulder_lift.pos",
-    "elbow_flex.pos",
-    "wrist_flex.pos",
-    "wrist_roll.pos",
-    "gripper.pos",
-)
-CAMERA_FIELDS = {
-    "image": "observation.images.front",
-    "top_image": "observation.images.top",
-    "wrist_image": "observation.images.wrist",
-}
 
 
 def _read_parquet_files(paths: list[Path]) -> pa.Table:
@@ -127,6 +116,14 @@ class So101BlockIntoCup50V5(tfds.core.GeneratorBasedBuilder):
         episodes = []
         for row in episodes_table.to_pylist():
             episode_index = int(row["episode_index"])
+            episode_length = int(row["length"])
+            if episode_length < ACTION_CHUNK_SIZE:
+                raise ValueError(
+                    f"Episode {episode_index} has {episode_length} frames, fewer than the "
+                    f"{ACTION_CHUNK_SIZE} frames required for one action chunk."
+                )
+            if not row["tasks"] or not str(row["tasks"][0]).strip():
+                raise ValueError(f"Episode {episode_index} has no language task")
             data_chunk = int(row["data/chunk_index"])
             data_file = int(row["data/file_index"])
             videos = {}
@@ -142,7 +139,7 @@ class So101BlockIntoCup50V5(tfds.core.GeneratorBasedBuilder):
             episodes.append(
                 Episode(
                     index=episode_index,
-                    length=int(row["length"]),
+                    length=episode_length,
                     task=str(row["tasks"][0]),
                     data_file=self.source_root / "data" / f"chunk-{data_chunk:03d}" / f"file-{data_file:03d}.parquet",
                     video_files=videos,
@@ -262,11 +259,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--validation-episodes", type=int, default=5)
     parser.add_argument("--split-seed", type=int, default=7)
     parser.add_argument("--image-size", type=int, default=256)
+    parser.add_argument("--expected-fps", type=int, default=CONTROL_FREQUENCY)
+    parser.add_argument("--allow-fps-mismatch", action="store_true")
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
+    source_info = json.loads((args.source_root / "meta" / "info.json").read_text())
+    source_fps = int(source_info["fps"])
+    if source_fps != args.expected_fps and not args.allow_fps_mismatch:
+        raise ValueError(
+            f"Dataset was recorded at {source_fps} FPS, but this recipe uses {args.expected_fps} FPS and "
+            f"{ACTION_CHUNK_SIZE}-action chunks. Pass --allow-fps-mismatch only after changing the chunk configuration."
+        )
     builder = So101BlockIntoCup50V5(
         data_dir=str(args.output_root),
         source_root=args.source_root,
@@ -275,6 +281,18 @@ def main() -> None:
         image_size=args.image_size,
     )
     builder.download_and_prepare()
+    manifest = {
+        "source_root": str(args.source_root.resolve()),
+        "dataset_name": DATASET_NAME,
+        "source_fps": source_fps,
+        "action_chunk_size": ACTION_CHUNK_SIZE,
+        "joint_names": list(JOINT_NAMES),
+        "camera_fields": CAMERA_FIELDS,
+        "image_size": args.image_size,
+        "validation_episodes": args.validation_episodes,
+        "split_seed": args.split_seed,
+    }
+    (Path(builder.data_dir) / "so101_conversion_manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     split_counts = {name: split.num_examples for name, split in builder.info.splits.items()}
     print(f"RLDS dataset written to: {builder.data_dir}")
     print(f"Splits: {split_counts}")

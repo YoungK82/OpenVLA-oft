@@ -57,6 +57,7 @@ from prismatic.vla.constants import (
     ACTION_PROPRIO_NORMALIZATION_TYPE,
     NUM_ACTIONS_CHUNK,
     PROPRIO_DIM,
+    ROBOT_PLATFORM,
 )
 from prismatic.vla.datasets import RLDSBatchTransform, RLDSDataset
 from prismatic.vla.datasets.rlds.utils.data_utils import save_dataset_statistics
@@ -69,6 +70,7 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 class FinetuneConfig:
     # fmt: off
     vla_path: str = "openvla/openvla-7b"             # Path to OpenVLA model (on HuggingFace Hub or stored locally)
+    robot_platform: str = "auto"                     # Robot constants; pass `so101` explicitly for SO-101
 
     # Dataset
     data_root_dir: Path = Path("datasets/rlds")      # Directory containing RLDS datasets
@@ -118,6 +120,49 @@ class FinetuneConfig:
     wandb_log_freq: int = 10                         # WandB logging frequency in steps
 
     # fmt: on
+
+
+def validate_finetune_config(cfg: FinetuneConfig) -> None:
+    """Fail early when CLI options disagree with the shape constants selected at import time."""
+    requested_platform = cfg.robot_platform.upper().replace("-", "")
+    if requested_platform != "AUTO" and requested_platform != ROBOT_PLATFORM:
+        raise ValueError(
+            f"--robot_platform={cfg.robot_platform!r} resolved to {ROBOT_PLATFORM}; make sure the option is passed "
+            "before the training script imports robot-dependent modules."
+        )
+
+    if ROBOT_PLATFORM == "SO101":
+        if "so101" not in cfg.dataset_name.lower():
+            raise ValueError("SO-101 training requires a registered SO-101 dataset name containing 'so101'.")
+        if cfg.num_images_in_input != 3:
+            raise ValueError(
+                "The registered SO-101 dataset uses front, top, and wrist images; set --num_images_in_input 3."
+            )
+        if not cfg.use_proprio:
+            raise ValueError("The SO-101 recipe requires --use_proprio True for its 6D joint state.")
+
+
+def validate_training_batch(batch: Dict[str, torch.Tensor], cfg: FinetuneConfig) -> None:
+    """Check the data/model contract before spending GPU time on the first optimization step."""
+    expected_action_shape = (NUM_ACTIONS_CHUNK, ACTION_DIM)
+    actual_action_shape = tuple(batch["actions"].shape[-2:])
+    if actual_action_shape != expected_action_shape:
+        raise ValueError(
+            f"Expected action chunks shaped (*, {expected_action_shape}), got {tuple(batch['actions'].shape)}"
+        )
+
+    if cfg.use_proprio:
+        if batch.get("proprio") is None or batch["proprio"].shape[-1] != PROPRIO_DIM:
+            actual_shape = None if batch.get("proprio") is None else tuple(batch["proprio"].shape)
+            raise ValueError(f"Expected proprio dimension {PROPRIO_DIM}, got {actual_shape}")
+
+    # OpenVLA's fused DINOv2+SigLIP transform produces six channels per input image.
+    expected_channels = 6 * cfg.num_images_in_input
+    if batch["pixel_values"].shape[1] != expected_channels:
+        raise ValueError(
+            f"Expected {cfg.num_images_in_input} transformed images ({expected_channels} channels), "
+            f"got pixel_values shape {tuple(batch['pixel_values'].shape)}"
+        )
 
 
 def remove_ddp_in_checkpoint(state_dict) -> dict:
@@ -766,6 +811,7 @@ def finetune(cfg: FinetuneConfig) -> None:
     Returns:
         None.
     """
+    validate_finetune_config(cfg)
     assert cfg.use_lora, "Only LoRA fine-tuning is supported. Please set --use_lora=True!"
     assert not (cfg.use_l1_regression and cfg.use_diffusion), (
         "Cannot do both L1 regression and diffusion. Please pick one of them!"
@@ -1009,6 +1055,14 @@ def finetune(cfg: FinetuneConfig) -> None:
         collate_fn=collator,
         num_workers=0,  # Important: Set to 0 if using RLDS, which uses its own parallelism
     )
+    validate_training_batch(next(iter(dataloader)), cfg)
+    if distributed_state.is_main_process:
+        print(
+            "Validated first training batch:\n"
+            f"\tactions: (*, {NUM_ACTIONS_CHUNK}, {ACTION_DIM})\n"
+            f"\timages: {cfg.num_images_in_input}\n"
+            f"\tproprio dim: {PROPRIO_DIM if cfg.use_proprio else 'disabled'}"
+        )
     if cfg.use_val_set:
         val_batch_size = cfg.batch_size
         val_dataloader = DataLoader(

@@ -130,8 +130,7 @@ def prepare_observation(obs, resize_size):
     # Prepare observations dict
     observation = {
         "full_image": img_resized,
-        "left_wrist_image": left_wrist_img_resized,
-        "right_wrist_image": right_wrist_img_resized,
+        "additional_images": [left_wrist_img_resized, right_wrist_img_resized],
         "state": obs.observation["qpos"],
     }
 

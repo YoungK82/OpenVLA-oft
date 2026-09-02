@@ -29,3 +29,9 @@ pip install "flash-attn==2.5.5" --no-build-isolation
 
 `flash-attn==2.5.5` does not contain Blackwell `sm_120` kernels. On RTX PRO 6000 Blackwell, skip that installation
 and use the Transformers SDPA attention path unless a newer Blackwell-compatible FlashAttention build has been verified.
+
+## SO-101
+
+SO-101 robot control uses a separate LeRobot client environment so hardware dependencies do not complicate the GPU
+training environment. Follow [`SO101.md`](SO101.md) for recording, RLDS conversion, fine-tuning, and safe dry-run
+evaluation instructions.
