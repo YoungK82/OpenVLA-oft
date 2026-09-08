@@ -15,8 +15,12 @@ import numpy as np
 # ruff: noqa: E402
 sys.path.append(".")
 
-from experiments.robot.openvla_utils import get_action_from_server
-from experiments.robot.robot_utils import DATE_TIME, get_image_resize_size, set_seed_everywhere
+from experiments.robot.so101.vla_client_utils import (
+    DATE_TIME,
+    get_action_from_server,
+    get_image_resize_size,
+    set_seed_everywhere,
+)
 from experiments.robot.so101.so101_utils import (
     JOINT_NAMES,
     action_array_to_robot_dict,

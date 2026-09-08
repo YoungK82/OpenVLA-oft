@@ -26,7 +26,7 @@ def get_joint_state(observation: Mapping) -> np.ndarray:
 
 def prepare_policy_observation(observation: Mapping, resize_size) -> dict:
     """Build the server payload in the training order: front, top, wrist, then state."""
-    from experiments.robot.openvla_utils import resize_image_for_policy
+    from experiments.robot.so101.vla_client_utils import resize_image_for_policy
 
     missing = [name for name in CAMERA_NAMES if name not in observation]
     if missing:

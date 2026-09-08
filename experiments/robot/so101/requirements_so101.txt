@@ -1,6 +1,16 @@
-# Install this file in the SO-101 robot-client environment, separately from the GPU training environment.
-numpy<2
-lerobot>=0.4.0,<0.5.0
+# Install this file in a Python 3.12+ SO-101 robot-client environment, separately from the GPU training
+# environment (do not `pip install -e .` here -- see SO101.md).
+#
+# lerobot>=0.6.0 requires Python>=3.12 and uses the top-level lerobot.robots/lerobot.cameras API (the pre-0.6
+# lerobot.common.* namespace is gone). so101_utils.py/run_so101_eval.py already target this API (dotted
+# "{motor}.pos" observation/action keys), so do not pin lerobot back below 0.6.
+lerobot>=0.6.0,<0.7.0
+# lerobot 0.6.x itself requires numpy>=2.0.0,<2.3.0 (bound comes from opencv-python-headless); mirrored here so
+# the resolver doesn't have to guess.
+numpy>=2.0.0,<2.3.0
+# Only used by vla_client_utils.py::resize_image_for_policy, to exactly reproduce the server's training-time
+# resize/JPEG pipeline. tensorflow<2.16 has no Python 3.12 wheel.
+tensorflow>=2.16
 imageio[ffmpeg]
 requests
 json_numpy

@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Dict, Optional, Tuple, Type
 
 import draccus
+import numpy as np
 import torch
 import torch.distributed as dist
 import torch.nn as nn
@@ -85,6 +86,7 @@ class FinetuneConfig:
     use_film: bool = False                           # If True, uses FiLM to infuse language inputs into visual features
     num_images_in_input: int = 1                     # Number of images in the VLA input (default: 1)
     use_proprio: bool = False                        # If True, includes robot proprioceptive state in input
+    attn_implementation: Optional[str] = None        # Optional HF backend: flash_attention_2, sdpa, or eager
 
     # Training configuration
     batch_size: int = 8                              # Batch size per device (total batch size = batch_size * num GPUs)
@@ -118,6 +120,8 @@ class FinetuneConfig:
     run_id_note: Optional[str] = None                # Extra note to add to end of run ID for logging
     run_id_override: Optional[str] = None            # Optional string to override the run ID with
     wandb_log_freq: int = 10                         # WandB logging frequency in steps
+    profile_training: bool = False                   # Print steady-state timing, throughput, and peak GPU memory
+    profile_warmup_steps: int = 5                    # Optimizer steps excluded from benchmark timing
 
     # fmt: on
 
@@ -878,12 +882,15 @@ def finetune(cfg: FinetuneConfig) -> None:
 
     # Load processor and VLA
     processor = AutoProcessor.from_pretrained(cfg.vla_path, trust_remote_code=True)
-    vla = AutoModelForVision2Seq.from_pretrained(
-        cfg.vla_path,
-        torch_dtype=torch.bfloat16,
-        low_cpu_mem_usage=True,
-        trust_remote_code=True,
-    ).to(device_id)
+    model_load_kwargs = {
+        "torch_dtype": torch.bfloat16,
+        "low_cpu_mem_usage": True,
+        "trust_remote_code": True,
+    }
+    if cfg.attn_implementation is not None:
+        model_load_kwargs["attn_implementation"] = cfg.attn_implementation
+    vla = AutoModelForVision2Seq.from_pretrained(cfg.vla_path, **model_load_kwargs).to(device_id)
+    print(f"Attention implementation: {vla.config._attn_implementation}")
 
     # Set number of images in VLA input
     vla.vision_backbone.set_num_images_in_input(cfg.num_images_in_input)
@@ -1083,10 +1090,18 @@ def finetune(cfg: FinetuneConfig) -> None:
     }
 
     # Start training
+    profile_step_times = []
+    profile_step_start = None
+    if cfg.profile_training:
+        torch.cuda.reset_peak_memory_stats(device_id)
     with tqdm.tqdm(total=cfg.max_steps, leave=False) as progress:
         vla.train()
         optimizer.zero_grad()
         for batch_idx, batch in enumerate(dataloader):
+            if cfg.profile_training and batch_idx % cfg.grad_accumulation_steps == 0:
+                torch.cuda.synchronize(device_id)
+                profile_step_start = time.perf_counter()
+
             # Compute training metrics and loss
             compute_diffusion_l1 = cfg.use_diffusion and batch_idx % cfg.diffusion_sample_freq == 0
             loss, metrics = run_forward_pass(
@@ -1151,6 +1166,11 @@ def finetune(cfg: FinetuneConfig) -> None:
                 scheduler.step()
                 optimizer.zero_grad()
                 progress.update()
+                if cfg.profile_training:
+                    torch.cuda.synchronize(device_id)
+                    step_time = time.perf_counter() - profile_step_start
+                    if gradient_step_idx >= cfg.profile_warmup_steps:
+                        profile_step_times.append(step_time)
 
             # Save model checkpoint: either keep latest checkpoint only or all checkpoints
             if gradient_step_idx > 0 and log_step % cfg.save_freq == 0:
@@ -1188,6 +1208,22 @@ def finetune(cfg: FinetuneConfig) -> None:
 
             # Stop training when max_steps is reached
             if log_step == cfg.max_steps:
+                if cfg.profile_training and profile_step_times:
+                    mean_step_time = float(np.mean(profile_step_times))
+                    effective_batch_size = (
+                        cfg.batch_size * cfg.grad_accumulation_steps * distributed_state.num_processes
+                    )
+                    print(
+                        "BENCHMARK_RESULT "
+                        f"batch_size={cfg.batch_size} "
+                        f"grad_accumulation_steps={cfg.grad_accumulation_steps} "
+                        f"measured_steps={len(profile_step_times)} "
+                        f"mean_step_seconds={mean_step_time:.6f} "
+                        f"median_step_seconds={float(np.median(profile_step_times)):.6f} "
+                        f"p95_step_seconds={float(np.percentile(profile_step_times, 95)):.6f} "
+                        f"samples_per_second={effective_batch_size / mean_step_time:.6f} "
+                        f"peak_gpu_memory_gib={torch.cuda.max_memory_allocated(device_id) / (1024 ** 3):.3f}"
+                    )
                 print(f"Max step {cfg.max_steps} reached! Stopping training...")
                 break
 

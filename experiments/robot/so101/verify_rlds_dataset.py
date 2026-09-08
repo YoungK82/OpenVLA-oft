@@ -21,6 +21,13 @@ def _numpy(value):
     return value.numpy() if hasattr(value, "numpy") else np.asarray(value)
 
 
+def _decode_text(value) -> str:
+    value = _numpy(value)
+    if isinstance(value, np.ndarray):
+        value = value.item()
+    return value.decode() if isinstance(value, bytes) else str(value)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-root", type=Path, required=True)
@@ -56,7 +63,7 @@ def main() -> None:
             raise ValueError("Dataset contains non-finite action or state values")
         action_values.append(action)
         state_values.append(state)
-        instructions.add(_numpy(step["language_instruction"]).item().decode())
+        instructions.add(_decode_text(step["language_instruction"]))
 
     manifest_path = builder_dir / "so101_conversion_manifest.json"
     manifest = json.loads(manifest_path.read_text()) if manifest_path.exists() else None

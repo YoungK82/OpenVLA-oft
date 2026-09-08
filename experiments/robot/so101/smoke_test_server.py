@@ -25,7 +25,9 @@ def _numpy(value) -> np.ndarray:
 
 
 def _decode_text(value) -> str:
-    value = _numpy(value).item()
+    value = _numpy(value)
+    if isinstance(value, np.ndarray):
+        value = value.item()
     return value.decode() if isinstance(value, bytes) else str(value)
 
 
