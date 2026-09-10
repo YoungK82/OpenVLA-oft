@@ -1,6 +1,8 @@
 """Convert a LeRobot v3 SO-101 dataset into an OpenVLA-compatible RLDS dataset."""
 
 import argparse
+import csv
+import hashlib
 import json
 import random
 from dataclasses import dataclass
@@ -30,6 +32,7 @@ def _read_parquet_files(paths: list[Path]) -> pa.Table:
 class Episode:
     index: int
     length: int
+    original_length: int
     task: str
     data_file: Path
     video_files: dict[str, Path]
@@ -81,7 +84,7 @@ class So101BlockIntoCup50V5(tfds.core.GeneratorBasedBuilder):
 
     name = DATASET_NAME
     pkg_dir_path = Path(__file__).parent
-    VERSION = tfds.core.Version("1.0.0")
+    VERSION = tfds.core.Version("1.1.0")
 
     def __init__(
         self,
@@ -90,12 +93,14 @@ class So101BlockIntoCup50V5(tfds.core.GeneratorBasedBuilder):
         validation_episodes: int,
         split_seed: int,
         image_size: int,
+        trim_onsets: dict[int, int] | None,
         **kwargs,
     ):
         self.source_root = Path(source_root)
         self.validation_episodes = validation_episodes
         self.split_seed = split_seed
         self.image_size = image_size
+        self.trim_onsets = trim_onsets
         self._info_json = json.loads((self.source_root / "meta" / "info.json").read_text())
         self._validate_source()
         self._episodes = self._load_episodes()
@@ -112,16 +117,46 @@ class So101BlockIntoCup50V5(tfds.core.GeneratorBasedBuilder):
                 raise ValueError(f"Missing required camera feature: {camera_key}")
 
     def _load_episodes(self) -> list[Episode]:
-        episodes_table = _read_parquet_files(list((self.source_root / "meta" / "episodes").glob("**/*.parquet")))
+        metadata_paths = sorted((self.source_root / "meta" / "episodes").glob("**/*.parquet"))
+        if not metadata_paths:
+            raise FileNotFoundError("No episode metadata parquet files found")
+
+        required_columns = {
+            "episode_index",
+            "tasks",
+            "length",
+            "data/chunk_index",
+            "data/file_index",
+            *(f"videos/{camera_key}/chunk_index" for camera_key in CAMERA_FIELDS.values()),
+            *(f"videos/{camera_key}/file_index" for camera_key in CAMERA_FIELDS.values()),
+            *(f"videos/{camera_key}/from_timestamp" for camera_key in CAMERA_FIELDS.values()),
+        }
+        full_metadata_tables = []
+        current_lengths = {}
+        for path in metadata_paths:
+            table = pq.read_table(path)
+            columns = set(table.column_names)
+            if required_columns <= columns:
+                full_metadata_tables.append(table)
+            elif {"episode_index", "length"} <= columns:
+                for row in table.select(["episode_index", "length"]).to_pylist():
+                    episode_index = int(row["episode_index"])
+                    if episode_index in current_lengths:
+                        raise ValueError(f"Duplicate compact metadata for episode {episode_index}")
+                    current_lengths[episode_index] = int(row["length"])
+
+        if not full_metadata_tables:
+            raise ValueError("No episode metadata file contains task, data, and video locations")
+        episodes_table = pa.concat_tables(full_metadata_tables, promote_options="default")
         episodes = []
+        seen_indices = set()
         for row in episodes_table.to_pylist():
             episode_index = int(row["episode_index"])
-            episode_length = int(row["length"])
-            if episode_length < ACTION_CHUNK_SIZE:
-                raise ValueError(
-                    f"Episode {episode_index} has {episode_length} frames, fewer than the "
-                    f"{ACTION_CHUNK_SIZE} frames required for one action chunk."
-                )
+            if episode_index in seen_indices:
+                raise ValueError(f"Duplicate full metadata for episode {episode_index}")
+            seen_indices.add(episode_index)
+            original_length = int(row["length"])
+            episode_length = current_lengths.get(episode_index, original_length)
             if not row["tasks"] or not str(row["tasks"][0]).strip():
                 raise ValueError(f"Episode {episode_index} has no language task")
             data_chunk = int(row["data/chunk_index"])
@@ -140,13 +175,20 @@ class So101BlockIntoCup50V5(tfds.core.GeneratorBasedBuilder):
                 Episode(
                     index=episode_index,
                     length=episode_length,
+                    original_length=original_length,
                     task=str(row["tasks"][0]),
                     data_file=self.source_root / "data" / f"chunk-{data_chunk:03d}" / f"file-{data_file:03d}.parquet",
                     video_files=videos,
                     video_start_times=starts,
                 )
             )
-        return sorted(episodes, key=lambda episode: episode.index)
+        episodes = sorted(episodes, key=lambda episode: episode.index)
+        episode_indices = {episode.index for episode in episodes}
+        if self.trim_onsets is not None and set(self.trim_onsets) != episode_indices:
+            missing = sorted(episode_indices - set(self.trim_onsets))
+            extra = sorted(set(self.trim_onsets) - episode_indices)
+            raise ValueError(f"Trim CSV episode coverage mismatch: missing={missing}, extra={extra}")
+        return episodes
 
     def _info(self) -> tfds.core.DatasetInfo:
         image = tfds.features.Image(
@@ -197,10 +239,33 @@ class So101BlockIntoCup50V5(tfds.core.GeneratorBasedBuilder):
     def _load_episode_rows(self, episode: Episode) -> list[dict]:
         table = pq.read_table(episode.data_file)
         table = table.filter(pc.equal(table["episode_index"], episode.index))
-        table = table.sort_by([("frame_index", "ascending")])
+        frame_indices = np.asarray(table["frame_index"])
+        if len(frame_indices) > 1 and np.any(np.diff(frame_indices) <= 0):
+            raise ValueError(f"Episode {episode.index} frame_index is not strictly increasing")
         rows = table.select(["action", "observation.state", "timestamp", "frame_index"]).to_pylist()
         if len(rows) != episode.length:
             raise ValueError(f"Episode {episode.index} has {len(rows)} rows, expected {episode.length}")
+        timestamps = np.asarray([float(row["timestamp"]) for row in rows])
+        if len(timestamps) > 1 and np.any(np.diff(timestamps) <= 0):
+            raise ValueError(f"Episode {episode.index} timestamps are not strictly increasing")
+        if self.trim_onsets is not None:
+            trim_start = self.trim_onsets[episode.index]
+            fps = float(self._info_json["fps"])
+            rows = [row for row in rows if round(float(row["timestamp"]) * fps) >= trim_start]
+        if len(rows) < ACTION_CHUNK_SIZE:
+            raise ValueError(
+                f"Episode {episode.index} retains {len(rows)} frames, fewer than the "
+                f"{ACTION_CHUNK_SIZE} frames required for one action chunk"
+            )
+        for row in rows:
+            action = np.asarray(row["action"])
+            state = np.asarray(row["observation.state"])
+            if action.shape != (len(JOINT_NAMES),) or state.shape != (len(JOINT_NAMES),):
+                raise ValueError(
+                    f"Episode {episode.index} has invalid action/state shape: {action.shape}/{state.shape}"
+                )
+            if not np.all(np.isfinite(action)) or not np.all(np.isfinite(state)):
+                raise ValueError(f"Episode {episode.index} has non-finite action/state values")
         return rows
 
     def _generate_steps(self, episode: Episode) -> Iterator[dict]:
@@ -259,13 +324,40 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--validation-episodes", type=int, default=5)
     parser.add_argument("--split-seed", type=int, default=7)
     parser.add_argument("--image-size", type=int, default=256)
+    parser.add_argument("--trim-onsets-csv", type=Path)
+    parser.add_argument("--trim-column", default="suggested_trim_keep_10_preframes")
     parser.add_argument("--expected-fps", type=int, default=CONTROL_FREQUENCY)
     parser.add_argument("--allow-fps-mismatch", action="store_true")
     return parser.parse_args()
 
 
+def _load_trim_onsets(path: Path, trim_column: str) -> tuple[dict[int, int], list[dict[str, str]]]:
+    with path.open(newline="", encoding="utf-8-sig") as csv_file:
+        reader = csv.DictReader(csv_file)
+        if reader.fieldnames is None or "episode_index" not in reader.fieldnames or trim_column not in reader.fieldnames:
+            raise ValueError(
+                f"Trim CSV must contain 'episode_index' and {trim_column!r}; found {reader.fieldnames}"
+            )
+        csv_rows = list(reader)
+
+    trim_onsets = {}
+    for row in csv_rows:
+        episode_index = int(row["episode_index"])
+        trim_start = int(row[trim_column])
+        if episode_index in trim_onsets:
+            raise ValueError(f"Duplicate trim CSV row for episode {episode_index}")
+        if trim_start < 0:
+            raise ValueError(f"Episode {episode_index} has negative trim start {trim_start}")
+        trim_onsets[episode_index] = trim_start
+    return trim_onsets, csv_rows
+
+
 def main() -> None:
     args = parse_args()
+    trim_onsets = None
+    trim_csv_rows = []
+    if args.trim_onsets_csv is not None:
+        trim_onsets, trim_csv_rows = _load_trim_onsets(args.trim_onsets_csv, args.trim_column)
     source_info = json.loads((args.source_root / "meta" / "info.json").read_text())
     source_fps = int(source_info["fps"])
     if source_fps != args.expected_fps and not args.allow_fps_mismatch:
@@ -279,18 +371,73 @@ def main() -> None:
         validation_episodes=args.validation_episodes,
         split_seed=args.split_seed,
         image_size=args.image_size,
+        trim_onsets=trim_onsets,
     )
+    trim_csv_by_episode = {int(row["episode_index"]): row for row in trim_csv_rows}
+    episode_records = []
+    for episode in builder._episodes:
+        retained_rows = builder._load_episode_rows(episode)
+        first_source_frame = round(float(retained_rows[0]["timestamp"]) * source_fps)
+        csv_row = trim_csv_by_episode.get(episode.index)
+        if csv_row is not None and csv_row.get("num_frames", "") != "":
+            csv_original_length = int(csv_row["num_frames"])
+            if csv_original_length != episode.original_length:
+                raise ValueError(
+                    f"Episode {episode.index} CSV num_frames={csv_original_length}, "
+                    f"but full metadata length={episode.original_length}"
+                )
+        if trim_onsets is not None and trim_onsets[episode.index] >= episode.original_length:
+            raise ValueError(
+                f"Episode {episode.index} trim start {trim_onsets[episode.index]} is outside "
+                f"original length {episode.original_length}"
+            )
+        record = {
+            "episode_index": episode.index,
+            "original_length": episode.original_length,
+            "input_length": episode.length,
+            "requested_trim_start": None if trim_onsets is None else trim_onsets[episode.index],
+            "effective_first_source_frame": first_source_frame,
+            "output_length": len(retained_rows),
+        }
+        if csv_row is not None and csv_row.get("meaningful_onset_zero_based", "") != "":
+            meaningful_onset = int(csv_row["meaningful_onset_zero_based"])
+            if not first_source_frame <= meaningful_onset or meaningful_onset + 2 >= first_source_frame + ACTION_CHUNK_SIZE:
+                raise ValueError(
+                    f"Episode {episode.index} first action chunk does not contain the three-frame meaningful onset: "
+                    f"first={first_source_frame}, onset={meaningful_onset}"
+                )
+            record["meaningful_onset_zero_based"] = meaningful_onset
+        episode_records.append(record)
     builder.download_and_prepare()
+    indices = [episode.index for episode in builder._episodes]
+    random.Random(args.split_seed).shuffle(indices)
+    validation_indices = sorted(indices[: args.validation_episodes])
+    training_indices = sorted(indices[args.validation_episodes :])
+    source_info_path = args.source_root / "meta" / "info.json"
+    revision_files = sorted((args.source_root / ".cache" / "huggingface" / "trees").glob("*.json"))
     manifest = {
         "source_root": str(args.source_root.resolve()),
+        "source_info_sha256": hashlib.sha256(source_info_path.read_bytes()).hexdigest(),
+        "source_revision": revision_files[0].stem if len(revision_files) == 1 else None,
         "dataset_name": DATASET_NAME,
         "source_fps": source_fps,
         "action_chunk_size": ACTION_CHUNK_SIZE,
         "joint_names": list(JOINT_NAMES),
         "camera_fields": CAMERA_FIELDS,
         "image_size": args.image_size,
+        "dataset_version": str(builder.version),
+        "trim_onsets_csv": None if args.trim_onsets_csv is None else str(args.trim_onsets_csv.resolve()),
+        "trim_onsets_csv_sha256": (
+            None
+            if args.trim_onsets_csv is None
+            else hashlib.sha256(args.trim_onsets_csv.read_bytes()).hexdigest()
+        ),
+        "trim_column": args.trim_column if args.trim_onsets_csv is not None else None,
         "validation_episodes": args.validation_episodes,
         "split_seed": args.split_seed,
+        "training_episode_indices": training_indices,
+        "validation_episode_indices": validation_indices,
+        "episodes": episode_records,
     }
     (Path(builder.data_dir) / "so101_conversion_manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     split_counts = {name: split.num_examples for name, split in builder.info.splits.items()}
