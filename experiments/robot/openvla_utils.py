@@ -45,6 +45,8 @@ np.set_printoptions(formatter={"float": lambda x: "{0:0.3f}".format(x)})
 
 def model_is_on_hf_hub(model_path: str) -> bool:
     """Checks whether a model path points to a model on Hugging Face Hub."""
+    if os.path.isdir(model_path):
+        return False
     # If the API call below runs without error, the model is on the hub
     try:
         HfApi().model_info(model_path)
@@ -183,7 +185,8 @@ def check_model_logic_mismatch(pretrained_checkpoint: str) -> None:
     # Find current files
     curr_files = {"modeling_prismatic.py": None, "configuration_prismatic.py": None}
 
-    for root, _, files in os.walk("./prismatic/"):
+    source_dir = Path(__file__).resolve().parents[2] / "prismatic" / "extern" / "hf"
+    for root, _, files in os.walk(source_dir):
         for filename in curr_files.keys():
             if filename in files and curr_files[filename] is None:
                 curr_files[filename] = os.path.join(root, filename)
