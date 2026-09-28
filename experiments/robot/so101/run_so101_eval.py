@@ -5,6 +5,7 @@ import socket
 import sys
 import time
 from collections import deque
+from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Union
@@ -15,6 +16,7 @@ import numpy as np
 # ruff: noqa: E402
 sys.path.append(".")
 
+from experiments.robot.so101.motor_feedback import MotorFeedbackLogger
 from experiments.robot.so101.vla_client_utils import (
     DATE_TIME,
     get_action_from_server,
@@ -52,6 +54,9 @@ class GenerateConfig:
     camera_height: int = 480
     control_frequency: int = 30
     max_relative_target: float = 5.0
+    log_motor_feedback: bool = True
+    # Uncalibrated output-shaft magnitude estimate for the 12V 30kgf.cm servo.
+    torque_constant_kgf_cm_per_A: float = 11.0
 
     # Evaluation and safety. Dry-run is intentionally the default.
     dry_run: bool = True
@@ -123,6 +128,8 @@ def validate_config(cfg: GenerateConfig) -> None:
         raise ValueError("This checkpoint recipe uses 30 Hz data and 30-action chunks; set control_frequency=30")
     if cfg.max_relative_target <= 0:
         raise ValueError("max_relative_target must be positive")
+    if not np.isfinite(cfg.torque_constant_kgf_cm_per_A) or cfg.torque_constant_kgf_cm_per_A <= 0:
+        raise ValueError("torque_constant_kgf_cm_per_A must be finite and positive")
     if not cfg.dry_run and cfg.num_open_loop_steps > 3:
         raise ValueError(
             "Refusing more than 3 open-loop hardware actions; validate the policy before increasing this limit"
@@ -137,7 +144,8 @@ def _next_task(previous: str, configured: str) -> str:
     return value or previous
 
 
-def _run_episode(cfg: GenerateConfig, robot, task: str, endpoint: str, resize_size, log_file):
+def _run_episode(cfg: GenerateConfig, robot, task: str, endpoint: str, resize_size, log_file,
+                 feedback_logger=None, episode_index: int = 1):
     action_queue = deque()
     replay_images = []
     query_time = 0.0
@@ -147,6 +155,10 @@ def _run_episode(cfg: GenerateConfig, robot, task: str, endpoint: str, resize_si
     for step in range(cfg.max_steps):
         step_start = time.perf_counter()
         observation = robot.get_observation()
+        if feedback_logger is not None:
+            feedback_logger.log_step(
+                robot.bus, episode=episode_index, step=step,
+            )
         replay_images.append(np.asarray(observation["front"]))
 
         if not action_queue:
@@ -185,6 +197,7 @@ def eval_so101(cfg: GenerateConfig) -> None:
     cfg.local_log_dir.mkdir(parents=True, exist_ok=True)
     note = f"--{cfg.run_id_note}" if cfg.run_id_note else ""
     log_path = cfg.local_log_dir / f"EVAL-SO101-{DATE_TIME}{note}.txt"
+    feedback_path = cfg.local_log_dir / f"MOTOR-FEEDBACK-{DATE_TIME}{note}.csv"
     endpoint = _server_endpoint(cfg)
     resize_size = get_image_resize_size(cfg)
     robot = _make_robot(cfg)
@@ -192,13 +205,26 @@ def eval_so101(cfg: GenerateConfig) -> None:
     successes = 0
     completed = 0
     task = ""
-    with log_path.open("w") as log_file:
+    feedback_context = (
+        feedback_path.open("w", newline="", encoding="utf-8") if cfg.log_motor_feedback else nullcontext(None)
+    )
+    with feedback_context as feedback_file, log_path.open("w") as log_file:
+        feedback_logger = (
+            MotorFeedbackLogger(feedback_file, cfg.torque_constant_kgf_cm_per_A)
+            if feedback_file is not None else None
+        )
         log_file.write(f"dry_run={cfg.dry_run} endpoint={endpoint}\n")
+        if feedback_logger is not None:
+            log_file.write(f"motor_feedback={feedback_path}\n")
+            logger.info("Motor feedback CSV: %s", feedback_path)
         try:
             robot.connect()
             for episode_index in range(cfg.num_rollouts_planned):
                 task = _next_task(task, cfg.task_description)
-                replay_images, query_time = _run_episode(cfg, robot, task, endpoint, resize_size, log_file)
+                replay_images, query_time = _run_episode(
+                    cfg, robot, task, endpoint, resize_size, log_file,
+                    feedback_logger=feedback_logger, episode_index=episode_index + 1,
+                )
                 success = input("Success? [y/N]: ").strip().lower() == "y"
                 completed += 1
                 successes += int(success)
