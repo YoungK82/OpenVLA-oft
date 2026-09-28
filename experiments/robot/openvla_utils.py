@@ -279,9 +279,12 @@ def get_vla(cfg: Any) -> torch.nn.Module:
         check_model_logic_mismatch(cfg.pretrained_checkpoint)
 
     # Load the model
+    attn_kwargs = {}
+    if getattr(cfg, "attn_implementation", None):
+        attn_kwargs["attn_implementation"] = cfg.attn_implementation
     vla = AutoModelForVision2Seq.from_pretrained(
         cfg.pretrained_checkpoint,
-        # attn_implementation="flash_attention_2",
+        **attn_kwargs,
         torch_dtype=torch.bfloat16,
         load_in_8bit=cfg.load_in_8bit,
         load_in_4bit=cfg.load_in_4bit,

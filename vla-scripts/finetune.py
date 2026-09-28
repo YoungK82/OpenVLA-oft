@@ -4,6 +4,8 @@ finetune.py
 Fine-tunes OpenVLA via LoRA.
 """
 
+import importlib.metadata
+import json
 import os
 import time
 from collections import deque
@@ -620,6 +622,17 @@ def log_metrics_to_wandb(metrics, prefix, step, wandb_entity) -> None:
     wandb_entity.log(log_dict, step=step)
 
 
+def training_attention_metadata(vla) -> Dict[str, str]:
+    """Record the attention setup; the moojink transformers fork makes sdpa bidirectional, stock transformers does not."""
+    distribution = importlib.metadata.distribution("transformers")
+    direct_url = distribution.read_text("direct_url.json")
+    return {
+        "attn_implementation": vla.module.language_model.config._attn_implementation,
+        "transformers_version": distribution.version,
+        "transformers_source": json.loads(direct_url).get("url", "unknown") if direct_url else "pypi",
+    }
+
+
 def save_training_checkpoint(
     cfg,
     run_dir,
@@ -665,6 +678,8 @@ def save_training_checkpoint(
         os.makedirs(checkpoint_dir, exist_ok=True)
         os.makedirs(adapter_dir, exist_ok=True)
         save_dataset_statistics(train_dataset.dataset_statistics, checkpoint_dir)
+        with open(checkpoint_dir / "training_attention.json", "w") as f:
+            json.dump(training_attention_metadata(vla), f, indent=2)
         print(f"Saving Model Checkpoint for Step {log_step}")
 
     # Wait for directories to be created
