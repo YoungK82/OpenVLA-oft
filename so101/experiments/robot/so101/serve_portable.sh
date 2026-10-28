@@ -57,13 +57,19 @@ print(f"Attention: {attn} (transformers from {current_source})", file=sys.stderr
 print(attn)
 PY
 )"
+# The action un-normalization key is the training dataset name, the only key in dataset_statistics.json
+unnorm_key="${VLA_UNNORM_KEY:-$(python -c 'import json, sys; keys = list(json.load(open(sys.argv[1]))); print(keys[0] if len(keys) == 1 else "")' "$checkpoint_dir/dataset_statistics.json")}"
+if [[ -z "$unnorm_key" ]]; then
+  echo "Set VLA_UNNORM_KEY: $checkpoint_dir/dataset_statistics.json does not hold exactly one dataset." >&2
+  exit 2
+fi
 cd -- "$repo_dir"
 exec python vla-scripts/deploy.py \
   --pretrained_checkpoint "$checkpoint_dir" \
   --robot_platform so101 \
   --use_l1_regression True --use_diffusion False --use_film False \
   --num_images_in_input 3 --use_proprio True --center_crop True \
-  --unnorm_key so101_block_into_cup_50_v5 \
+  --unnorm_key "$unnorm_key" \
   --attn_implementation "$attn_implementation" \
   --diagnostic_log "${VLA_DIAGNOSTIC_LOG:-}" \
   --host "${VLA_HOST:-127.0.0.1}" --port "${VLA_PORT:-8777}"

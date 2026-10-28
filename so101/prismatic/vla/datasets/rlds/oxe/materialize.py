@@ -18,6 +18,18 @@ from prismatic.vla.datasets.rlds.oxe.transforms import OXE_STANDARDIZATION_TRANS
 overwatch = initialize_overwatch(__name__)
 
 
+# Every SO-101 RLDS export from experiments/robot/so101/convert_lerobot_to_rlds.py has the same features, so a new
+# `so101_*` dataset needs no entry of its own in configs.py / transforms.py
+SO101_REGISTRY_NAME = "so101_block_into_cup_50_v5"
+
+
+def registry_name(dataset_name: str) -> str:
+    """Registry key for `dataset_name`: itself if registered, else the shared SO-101 entry for `so101_*` names."""
+    if dataset_name not in OXE_DATASET_CONFIGS and "so101" in dataset_name.lower():
+        return SO101_REGISTRY_NAME
+    return dataset_name
+
+
 def make_oxe_dataset_kwargs(
     dataset_name: str,
     data_root_dir: Path,
@@ -28,7 +40,7 @@ def make_oxe_dataset_kwargs(
     action_proprio_normalization_type = ACTION_PROPRIO_NORMALIZATION_TYPE,
 ) -> Dict[str, Any]:
     """Generates config (kwargs) for given dataset from Open-X Embodiment."""
-    dataset_kwargs = deepcopy(OXE_DATASET_CONFIGS[dataset_name])
+    dataset_kwargs = deepcopy(OXE_DATASET_CONFIGS[registry_name(dataset_name)])
     supported_action_encodings = [
         ActionEncoding.EEF_POS,
         ActionEncoding.EEF_R6,
@@ -79,7 +91,7 @@ def make_oxe_dataset_kwargs(
         dataset_kwargs["language_key"] = "language_instruction"
 
     # Specify Standardization Transform
-    dataset_kwargs["standardize_fn"] = OXE_STANDARDIZATION_TRANSFORMS[dataset_name]
+    dataset_kwargs["standardize_fn"] = OXE_STANDARDIZATION_TRANSFORMS[registry_name(dataset_name)]
 
     # Add any aux arguments
     if "aux_kwargs" in dataset_kwargs:

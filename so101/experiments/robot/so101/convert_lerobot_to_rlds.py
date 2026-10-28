@@ -5,6 +5,7 @@ import csv
 import hashlib
 import json
 import random
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
@@ -321,6 +322,11 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source-root", type=Path, required=True)
     parser.add_argument("--output-root", type=Path, required=True)
+    parser.add_argument(
+        "--dataset-name",
+        default=DATASET_NAME,
+        help="RLDS dataset name; pass the same name to finetune.py --dataset_name. Must contain 'so101'.",
+    )
     parser.add_argument("--validation-episodes", type=int, default=5)
     parser.add_argument("--split-seed", type=int, default=7)
     parser.add_argument("--image-size", type=int, default=256)
@@ -354,6 +360,9 @@ def _load_trim_onsets(path: Path, trim_column: str) -> tuple[dict[int, int], lis
 
 def main() -> None:
     args = parse_args()
+    if not re.fullmatch(r"[a-z][a-z0-9_]*", args.dataset_name) or "so101" not in args.dataset_name:
+        raise ValueError(f"--dataset-name must be lowercase snake_case and contain 'so101', got {args.dataset_name!r}")
+    So101BlockIntoCup50V5.name = args.dataset_name
     trim_onsets = None
     trim_csv_rows = []
     if args.trim_onsets_csv is not None:
@@ -419,7 +428,7 @@ def main() -> None:
         "source_root": str(args.source_root.resolve()),
         "source_info_sha256": hashlib.sha256(source_info_path.read_bytes()).hexdigest(),
         "source_revision": revision_files[0].stem if len(revision_files) == 1 else None,
-        "dataset_name": DATASET_NAME,
+        "dataset_name": args.dataset_name,
         "source_fps": source_fps,
         "action_chunk_size": ACTION_CHUNK_SIZE,
         "joint_names": list(JOINT_NAMES),
