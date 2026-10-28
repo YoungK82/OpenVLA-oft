@@ -15,9 +15,9 @@ pip3 install torch torchvision torchaudio
 pip3 install torch==2.11.0 torchvision==0.26.0 torchaudio==2.11.0 \
   --index-url https://download.pytorch.org/whl/cu130
 
-# Clone openvla-oft repo and pip install to download dependencies
-git clone https://github.com/moojink/openvla-oft.git
-cd openvla-oft
+# Clone this repo and install the SO-101 copy in so101/ (the repo root is the unmodified upstream code)
+git clone https://github.com/YoungK82/OpenVLA-oft.git
+cd OpenVLA-oft/so101
 pip install -e .
 
 # Install Flash Attention 2 for training (https://github.com/Dao-AILab/flash-attention)
@@ -26,6 +26,16 @@ pip install packaging ninja
 ninja --version; echo $?  # Verify Ninja --> should return exit code "0"
 pip install "flash-attn==2.5.5" --no-build-isolation
 ```
+
+Run training, serving and the scripts below from inside `so101/`. `pip install -e .` there also installs the
+`moojink/transformers-openvla-oft` fork, whose sdpa attention is bidirectional (the paper's parallel decoding); stock
+transformers would silently train a causal model. Check both with:
+
+```bash
+python -c "import prismatic, importlib.metadata as m; print(prismatic.__file__); print(m.distribution('transformers').read_text('direct_url.json'))"
+```
+
+The first line must end in `so101/prismatic/__init__.py` and the second must name `transformers-openvla-oft`.
 
 `flash-attn==2.5.5` does not contain Blackwell `sm_120` kernels. On RTX PRO 6000 Blackwell, skip that installation
 and use the Transformers SDPA attention path unless a newer Blackwell-compatible FlashAttention build has been verified.
