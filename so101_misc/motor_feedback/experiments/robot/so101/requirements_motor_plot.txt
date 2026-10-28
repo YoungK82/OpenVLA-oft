@@ -1,0 +1,2 @@
+# Optional viewer dependencies; install in the existing openvla-oft environment.
+matplotlib>=3.9,<4
