@@ -32,7 +32,7 @@ SO-101(`../so101/`)을 새 하드웨어에 붙였던 방식을 그대로 따른�
 - 두 변형(차이는 `experiments/robot/crane/constants.py`와 학습 스크립트의 데이터셋 이름뿐):
   - `b1_with_power/` (교수님 1번 방안): 지시문 = task + `. 하중 {load:.1f}t, 마그넷 세기 N단`(NaN → `꺼짐`),
     proprio = 크레인 위치 x, y, z(3차원, RLDS 키 `crane_pos`). 하중은 언어로만 들어간다. 데이터셋 `crane_b_magnet_onoff_loadpower`.
-    (예전 `crane_b_magnet_onoff_power` = 마그넷 세기만 언어 + state 4차원 proprio. 폐기, 재변환함.)
+    (예전 `crane_b_magnet_onoff_power` = 마그넷 세기만 언어 + state 4차원 proprio. Hawk job 56520으로 학습 후 종료, 이후 이 설계로 교체.)
   - `b2_without_power/`: 지시문 = task만, proprio = state 4차원(하중, x, y, z). 데이터셋 `crane_b_magnet_onoff_nopower`.
   - 둘 다 `--use_proprio True`. b1과 b2는 하중의 위치(언어 vs proprio)와 마그넷 세기 유무 두 가지가 다르다.
   - 주의: 원본 `observation.state`는 데이터 제공 측 정의상 `[load_total_t, x, y, z]`라 하중이 포함돼 있다.
@@ -139,7 +139,7 @@ $PY experiments/robot/crane/eval_server_on_rlds.py --data-root ~/datasets/rlds -
   - 기본값: GPU 2장, 유효 batch 8(1×2×누적 4), **25K 스텝(≈1.3 epoch), LR 5e-4 고정(감소 없음)** — 사용자 결정. `LR_DECAY=1`이면
     10K~20K에 자동 감소. 예전 120K(train_crane.sh)는 논문 스텝 수를 batch 차이 없이 가져온 값이라 버림(논문 ALOHA는 batch 32×100K,
     LIBERO는 batch 64×150K). 25K에서도 validation이 좋아지면 `<run_dir>/plan.env`의 `MAX_STEPS`만 늘려 이어서 학습.
-  - job 이름: `yhkim-crane-oft-power`(b1), `yhkim-crane-oft-nopower`(b2). 출력은 제출 폴더의 `slurm-<job이름>-<jobid>.out`.
+  - job 이름: `yhkim-crane-oft-loadpower`(b1, 예전 b1은 `yhkim-crane-oft-power`), `yhkim-crane-oft-nopower`(b2). 출력은 제출 폴더의 `slurm-<job이름>-<jobid>.out`.
   - Hawk 경로: env·base 모델은 `~/yhkim/so101-openvla-oft/`(env는 transformers fork), RLDS는 `~/yhkim/datasets/rlds/`.
     스크립트는 `conda activate` 앞뒤로 `set +u`/`set -u` 필요(conda hook이 정의 안 된 변수를 읽어 job이 바로 죽음).
 - 접속 정보는 레포에 적지 않는다. Hawk 계정은 공용이므로 비밀번호·토큰을 파일이나 프롬프트에 남기지 않는다.

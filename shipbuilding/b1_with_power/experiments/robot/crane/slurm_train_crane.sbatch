@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#SBATCH --job-name=yhkim-crane-oft-power
+#SBATCH --job-name=yhkim-crane-oft-loadpower
 #SBATCH --partition=a100_40g
 #SBATCH --account=m-gpu
 #SBATCH --qos=m-qos
@@ -10,7 +10,7 @@
 #SBATCH --requeue
 #SBATCH --output=slurm-%x-%j.out
 #SBATCH --error=slurm-%x-%j.err
-# Magnet crane OpenVLA-OFT fine-tuning on Hawk (A100 40GB): 3 exo cameras + language (FiLM) + 4D state proprio.
+# Magnet crane OpenVLA-OFT fine-tuning on Hawk (A100 40GB): 3 exo cameras + language (FiLM, incl. load + power) + crane x/y/z proprio.
 # Same recipe as train_crane.sh, split into 24 h jobs that chain themselves until MAX_STEPS.
 # Hawk rules (m-qos): max 36 h per job, max 4 GPUs at once, 16 cores per GPU (-n = 16 x GPUs).
 #
@@ -54,7 +54,7 @@ DATA_ROOT="${DATA_ROOT:-$WORK_DIR/datasets/rlds}"
 RUN_ROOT="${RUN_ROOT:-$REPO_DIR/checkpoints}"
 
 # ---- Recipe ----
-DATASET_NAME="${DATASET_NAME:-crane_b_magnet_onoff_power}"
+DATASET_NAME="${DATASET_NAME:-crane_b_magnet_onoff_loadpower}"
 RUN_ID="${RUN_ID:-$DATASET_NAME}"
 BATCH_SIZE="${BATCH_SIZE:-1}"                # per GPU; batch 2 runs out of memory on A100 40GB (accumulation is recomputed)
 EFFECTIVE_BATCH="${EFFECTIVE_BATCH:-8}"
