@@ -1,0 +1,91 @@
+# shipbuilding/: 조선소 마그넷 크레인 데이터로 OpenVLA-OFT 학습
+
+이 폴더는 크레인 B 데이터(강판 들기·옮기기·내려놓기)로 OpenVLA-OFT를 학습해 **마그넷 10개의 on/off를 예측**하는 작업이다.
+SO-101(`../so101/`)을 새 하드웨어에 붙였던 방식을 그대로 따른다. 사용자와는 한국어로 대화한다.
+
+## 레포 규칙
+- 레포 `YoungK82/OpenVLA-oft`(public). 루트는 원본 `moojink/openvla-oft`와 **동일하게 유지**하고 수정하지 않는다.
+- `so101/` = SO-101 bidirectional 학습 파이프라인, `so101_misc/` = 잡동사니, `shipbuilding/` = 이 작업.
+- 각 하위 폴더는 독립 사본(자체 `prismatic/`, `vla-scripts/`)이다. 실행은 그 폴더 안에서 `PYTHONPATH=$PWD`로 한다.
+  conda 환경 `openvla-oft`의 editable 설치는 `../so101/`을 가리키므로 PYTHONPATH를 꼭 지정한다.
+- transformers는 `moojink/transformers-openvla-oft` fork여야 bidirectional로 학습된다(이 서버 env는 이미 fork).
+- 데이터·RLDS·체크포인트·manifest는 커밋하지 않는다(public). push는 사용자가 토큰으로 직접 한다.
+- md 파일을 늘리지 않는다. 사용법은 스크립트 상단 주석에 둔다.
+
+## 데이터 (`/home/shared/2026shipbuildingAX/Data_201012-201014/`)
+- 75개 폴더(이름=TID), 폴더마다 LeRobot v3 데이터셋 1개(에피소드 1개). 30fps, 1920×1080, 16~221초, 총 180,105프레임.
+- 날짜별 13(10/12) / 41(10/13) / 21(10/14)개. 데이터 제공 측 설명: 폴더 안 `유니스트_v2_포맷_차이.pdf`.
+- 학습용 parquet `data/chunk-000/file-000.parquet`:
+  - `action` (10): magnet_1~10 on/off, 0/1 (크레인 PLC 여자 명령). 에피소드당 바뀌는 횟수 중간값 2.
+  - `observation.state` (4) = `observation.load`(1) + `observation.crane_pos`(3): `[load_total_t, x_주행, y_횡행, z_권상]`.
+    센서 실측이 아니라 **ERP 이벤트 값을 유지**한 것. U 이벤트(150번째 프레임, 5초)까지 전부 0, 이후 6~13초마다 바뀜.
+  - `observation.magnet_power_level` (1): 작업자 패널의 자력 단계. 5단 76.5%, 3단 4.1%, 0단 0.3%, 4단 3프레임, NaN 19.1%
+    (NaN = 단수 꺼짐). **숫자면 99.9% 마그넷 ON, NaN이면 28% ON → on/off 정답이 거의 새는 값.**
+  - `current` (10): 이번 배치는 전부 NaN → 사용 안 함.
+- `ship_ax_excite_measured.parquet`(측정여자)는 학습 데이터가 아니다(명령보다 늦게 따라오는 결과값). 쓰지 않는다.
+- `meta/episodes/*.parquet`: `lift/lower_event_frame`, `erp_events`, `plate_id` 등 → 입력 금지(정답 시점), 평가 구간 나누는 데만 사용.
+- 영상: parquet 행 n = 각 mp4의 n번째 프레임(0초 시작, CFR). 카메라 9대 중 exo 3대만 사용.
+
+## 결정된 설계
+- 교수님 방안: 1) parquet 정보를 언어로 넣어 모델 변경 없이 학습(먼저 할 것) → 1.5) 강재 스펙은 언어, 로드셀은 projector →
+  2) projector 여러 개. 사용자 해석으로 1번은 **state = OFT proprio 토큰(ALOHA qpos와 같은 방식), 나머지 parquet 값 = 언어**.
+- 두 변형(차이는 `experiments/robot/crane/constants.py`와 학습 스크립트의 데이터셋 이름뿐):
+  - `b1_with_power/`: 지시문 = task + `. 마그넷 세기 N단`(NaN → `꺼짐`), 데이터셋 `crane_b_magnet_onoff_power`
+  - `b2_without_power/`: 지시문 = task만, 데이터셋 `crane_b_magnet_onoff_nopower`
+  - 둘 다 state 4차원을 proprio로 넣는다(`--use_proprio True`). b1 vs b2로 마그넷 세기의 효과(누수)를 본다.
+  - 이전 A안(task만, proprio 없음)과 "하중·위치까지 텍스트로" 안은 폐기했다.
+- 카메라: cam1 = exo_1(CAM1), cam2 = exo(CAM2), cam3 = exo_3(CAM3) → RLDS `cam1/2/3_image` → `primary/secondary/tertiary`.
+- 256×256으로 저장(1920×1080을 눌러서 축소), 모델 입력 224.
+- `NUM_ACTIONS_CHUNK = 8`(약 0.27초), `ACTION_DIM = 10`, `PROPRIO_DIM = 4`, 정규화 `BOUNDS`(0/1 → -1/1, 그대로 복원).
+- FiLM 사용(`--use_film True`): 지시문이 에피소드마다 다르므로. FiLM은 지시문 토큰 임베딩 평균을 쓰므로 숫자는 거의 전달 안 됨.
+- validation 10개 = 날짜별 무작위 1/6/3개(seed 7). `constants.py`의 `VALIDATION_PER_DATE`.
+
+## state가 모델에 들어가는 경로 (원본 OFT 코드 그대로, 새 구현 없음)
+`state` → `observation/proprio` → 데이터셋 통계 min/max로 차원별 [-1, 1] 정규화(`prismatic/vla/datasets/rlds/utils/data_utils.py`,
+통계는 체크포인트 `dataset_statistics.json`에 저장) → `ProprioProjector`(Linear 4→4096, GELU, Linear; `prismatic/models/projectors.py`)
+→ 영상 패치 토큰 뒤에 토큰 1개로 붙음(`prismatic/extern/hf/modeling_prismatic.py` `_process_proprio_features`).
+추론 때는 `experiments/robot/openvla_utils.py` `normalize_proprio`가 체크포인트 통계로 같은 정규화를 한다.
+
+## so101/ 대비 바꾼 코드 (두 폴더 동일)
+- `prismatic/vla/constants.py`: `CRANE_CONSTANTS`, `--robot_platform crane`, 이름 자동 인식(`crane`).
+- `oxe/configs.py`(인코딩 `CRANE_LOAD_POS`, `MAGNET_ONOFF_10` + 항목 `crane_b_magnet_onoff`), `oxe/transforms.py`, `oxe/mixtures.py`.
+- `oxe/materialize.py`: 인코딩 허용·마스크, 등록 안 된 `crane_*` 이름은 공용 항목 사용(`registry_name`).
+- `prismatic/vla/datasets/datasets.py`: 이름에 `crane`이 있으면 카메라 3대 로드, 이미지 순서에 `image_tertiary`.
+  **이게 빠지면 에러 없이 카메라 1대만 학습된다.**
+- `vla-scripts/finetune.py`(CRANE: 이름에 crane, 카메라 3대, proprio 필수), `vla-scripts/deploy.py`(카메라 3대).
+- `experiments/robot/crane/`: `constants.py`, `crane_utils.py`(`instruction_text` — 변환과 추론이 같이 씀),
+  `convert_crane_to_rlds.py`, `verify_rlds_dataset.py`, `train_crane.sh`, `serve_crane.sh`, `eval_server_on_rlds.py`.
+
+## 명령 (각 폴더 안에서, `PY=~/miniconda3/envs/openvla-oft/bin/python`)
+```bash
+export PYTHONPATH=$PWD
+CUDA_VISIBLE_DEVICES= $PY experiments/robot/crane/convert_crane_to_rlds.py \
+  --source-root /home/shared/2026shipbuildingAX/Data_201012-201014 --output-root ~/datasets/rlds   # CPU, 약 30프레임/s
+$PY experiments/robot/crane/verify_rlds_dataset.py --data-root ~/datasets/rlds
+CUDA_VISIBLE_DEVICES=0 DATA_ROOT=~/datasets/rlds BASE_MODEL=<openvla-7b> bash experiments/robot/crane/train_crane.sh
+#   병합: vla-scripts/merge_lora_weights_and_save.py (학습은 --merge_lora_during_training False 기본)
+CUDA_VISIBLE_DEVICES=0 VLA_PORT=8777 bash experiments/robot/crane/serve_crane.sh <checkpoint>
+$PY experiments/robot/crane/eval_server_on_rlds.py --data-root ~/datasets/rlds --server-endpoint http://127.0.0.1:8777/act
+```
+- base 모델 `/home/shared/openvla-oft/models/openvla-7b-47a0ec7`은 공유 폴더다. `finetune.py`가 `--vla_path`의 `config.json`을
+  고쳐 쓰므로, 테스트 때는 safetensors만 링크하고 나머지는 복사한 사본 폴더를 `BASE_MODEL`로 쓴다.
+- 평가 지표: 마그넷별 정확도(0.5 기준), 10개 모두 맞춘 비율, on/off 바뀌는 시점 오차(프레임)와 놓친 개수.
+
+## 서버·GPU 규칙
+- 공용 서버(aga01, RTX PRO 6000 96GB × 2). **GPU를 쓰기 전에 어느 GPU를 쓸지 사용자에게 알린다.** 사용자가 이 작업의 smoke는 GPU 0으로 정했다.
+- 오래 걸리는 작업(변환, 학습)은 tmux에서 돌린다.
+- 작업(백그라운드 작업, tmux 실행, 테스트, 변환, 파일 작성 등)이 하나 끝나면 **그 즉시 결과를 보고한다.**
+  다른 작업이 끝나기를 기다렸다가 한꺼번에 보고하지 않는다. 여러 작업이 동시에 돌면 끝난 순서대로 짧게 보고하고,
+  아직 돌고 있는 작업을 함께 적는다. 대기 중이면 무엇을 기다리는지, 대략 언제 끝나는지 알린다.
+- Hawk 클러스터(SLURM, job 12시간 제한)용 스크립트는 `../so101_misc/cluster_transfer/`에 있다(exact resume, 자동 재제출). 접속 정보는 레포에 적지 않는다.
+
+## 진행 상황 (2026-10-29 02:00)
+- 완료: 두 폴더 구현, 75개 메타데이터 점검, 4개 에피소드 변환·검증·로더 확인, GPU 0 smoke(b1·b2 통과).
+- `finetune.py`에 Hawk용 exact resume·자동 LR 감소를 이식(`--resume_from`, `--resume_save_freq`, STOP 파일,
+  `--auto_lr_decay`). GPU 0에서 STOP→재시작 테스트 통과(step 6에서 멈추고 이어서 step 10 완료).
+- `train_crane.sh` 기본값: 1 GPU, batch 8(누적 없음, 1 epoch ≈ 19.7K steps), lr 5e-4, 최대 120K, LR 감소 20K~80K 사이
+  자동, 검증·저장 5K마다, 재개용 저장 250마다, 자동 재개, `STOP_AT=HH:MM`.
+- 진행 중: b1·b2 전체 RLDS 변환(tmux `convert-b1_with_power`, `convert-b2_without_power`, CPU) → `~/datasets/rlds/`,
+  로그 `~/datasets/rlds/logs/convert_*.log`.
+- **학습은 시작하지 않았다. 학습 여부·설정은 사용자가 결정한다.** 속도 측정(batch 8)도 하지 않았다.
+- 커밋·push는 아직 안 함.
