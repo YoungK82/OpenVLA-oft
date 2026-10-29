@@ -30,13 +30,16 @@ SO-101(`../so101/`)을 새 하드웨어에 붙였던 방식을 그대로 따른�
 - 교수님 방안: 1) parquet 정보를 언어로 넣어 모델 변경 없이 학습(먼저 할 것) → 1.5) 강재 스펙은 언어, 로드셀은 projector →
   2) projector 여러 개. 사용자 해석으로 1번은 **state = OFT proprio 토큰(ALOHA qpos와 같은 방식), 나머지 parquet 값 = 언어**.
 - 두 변형(차이는 `experiments/robot/crane/constants.py`와 학습 스크립트의 데이터셋 이름뿐):
-  - `b1_with_power/`: 지시문 = task + `. 마그넷 세기 N단`(NaN → `꺼짐`), 데이터셋 `crane_b_magnet_onoff_power`
-  - `b2_without_power/`: 지시문 = task만, 데이터셋 `crane_b_magnet_onoff_nopower`
-  - 둘 다 state 4차원을 proprio로 넣는다(`--use_proprio True`). b1 vs b2로 마그넷 세기의 효과(누수)를 본다.
+  - `b1_with_power/` (교수님 1번 방안): 지시문 = task + `. 하중 {load:.1f}t, 마그넷 세기 N단`(NaN → `꺼짐`),
+    proprio = 크레인 위치 x, y, z(3차원, RLDS 키 `crane_pos`). 하중은 언어로만 들어간다. 데이터셋 `crane_b_magnet_onoff_loadpower`.
+    (예전 `crane_b_magnet_onoff_power` = 마그넷 세기만 언어 + state 4차원 proprio. 폐기, 재변환함.)
+  - `b2_without_power/`: 지시문 = task만, proprio = state 4차원(하중, x, y, z). 데이터셋 `crane_b_magnet_onoff_nopower`.
+  - 둘 다 `--use_proprio True`. b1과 b2는 하중의 위치(언어 vs proprio)와 마그넷 세기 유무 두 가지가 다르다.
+  - 주의: 원본 `observation.state`는 데이터 제공 측 정의상 `[load_total_t, x, y, z]`라 하중이 포함돼 있다.
   - 이전 A안(task만, proprio 없음)과 "하중·위치까지 텍스트로" 안은 폐기했다.
 - 카메라: cam1 = exo_1(CAM1), cam2 = exo(CAM2), cam3 = exo_3(CAM3) → RLDS `cam1/2/3_image` → `primary/secondary/tertiary`.
 - 256×256으로 저장(1920×1080을 눌러서 축소), 모델 입력 224.
-- `NUM_ACTIONS_CHUNK = 8`(약 0.27초), `ACTION_DIM = 10`, `PROPRIO_DIM = 4`, 정규화 `BOUNDS`(0/1 → -1/1, 그대로 복원).
+- `NUM_ACTIONS_CHUNK = 8`(약 0.27초), `ACTION_DIM = 10`, `PROPRIO_DIM` = b1 3 / b2 4, 정규화 `BOUNDS`(0/1 → -1/1, 그대로 복원).
 - FiLM 사용(`--use_film True`): 지시문이 에피소드마다 다르므로. FiLM은 지시문 토큰 임베딩 평균을 쓰므로 숫자는 거의 전달 안 됨.
 - validation 10개 = 날짜별 무작위 1/6/3개(seed 7). `constants.py`의 `VALIDATION_PER_DATE`.
 

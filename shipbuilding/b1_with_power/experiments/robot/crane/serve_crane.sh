@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Serve a magnet crane checkpoint for eval_server_on_rlds.py (FiLM on, 4D state proprio, 3 exo cameras).
+# Serve a magnet crane checkpoint for eval_server_on_rlds.py (FiLM on, crane x/y/z proprio, 3 exo cameras).
 # Usage: CUDA_VISIBLE_DEVICES=0 bash experiments/robot/crane/serve_crane.sh /path/to/checkpoint   (VLA_PORT, VLA_HOST)
 # The checkpoint must hold merged model weights (merge_lora_weights_and_save.py) plus its vision_backbone--*.pt.
 set -euo pipefail

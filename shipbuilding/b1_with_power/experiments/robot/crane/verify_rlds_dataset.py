@@ -9,6 +9,7 @@ import numpy as np
 import tensorflow_datasets as tfds
 
 from experiments.robot.crane.constants import ACTION_CHUNK_SIZE, CAMERA_FIELDS, DATASET_NAME, MAGNET_NAMES, STATE_NAMES
+from experiments.robot.crane.crane_utils import instruction_text
 
 
 def _builder_directory(data_root: Path, dataset_name: str) -> Path:
@@ -64,8 +65,12 @@ def main() -> None:
                     raise ValueError(f"{tid}: instruction does not start with the episode task")
                 if manifest["language_mode"] == "task" and language != task:
                     raise ValueError(f"{tid}: task-only dataset has extra instruction text")
-                if manifest["language_mode"] == "power" and not language[len(task):].startswith(". 마그넷 세기 "):
-                    raise ValueError(f"{tid}: instruction lacks the magnet power level: {language!r}")
+                if manifest["language_mode"] == "load_power":
+                    want = instruction_text(task, float(state[0]), float(observation["magnet_power_level"].numpy()[0]), "load_power")
+                    if language != want:
+                        raise ValueError(f"{tid}: instruction {language!r} != expected {want!r}")
+                    if not np.array_equal(observation["crane_pos"].numpy(), state[1:]):
+                        raise ValueError(f"{tid}: crane_pos is not state[1:]")
                 example = language
                 flags = tuple(bool(step[name].numpy()) for name in ("is_first", "is_last", "is_terminal"))
                 last = steps == lengths[tid]

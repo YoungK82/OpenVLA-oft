@@ -168,7 +168,7 @@ def validate_finetune_config(cfg: FinetuneConfig) -> None:
         if cfg.num_images_in_input != 3:
             raise ValueError("The magnet crane dataset uses three exo cameras (cam1, cam2, cam3); set --num_images_in_input 3.")
         if not cfg.use_proprio:
-            raise ValueError("The magnet crane recipe feeds the 4D state (load, x, y, z) as proprio; set --use_proprio True.")
+            raise ValueError("The magnet crane recipe feeds the crane position (x, y, z) as proprio; set --use_proprio True.")
 
     if cfg.resume_from is not None:
         if cfg.resume:

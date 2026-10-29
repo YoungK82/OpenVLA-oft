@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Fine-tune OpenVLA-OFT on the magnet crane RLDS dataset on ONE GPU: 3 exo cameras + language (FiLM) + 4D state proprio.
+# Fine-tune OpenVLA-OFT on the magnet crane RLDS dataset on ONE GPU: 3 exo cameras + language (FiLM) + crane x/y/z proprio.
 #
 # Usage (run in tmux):
 #   CUDA_VISIBLE_DEVICES=0 DATA_ROOT=~/datasets/rlds BASE_MODEL=/path/to/openvla-7b bash experiments/robot/crane/train_crane.sh
@@ -12,7 +12,7 @@
 # pick the checkpoint by validation (overfitting guard), not by train L1.
 set -euo pipefail
 repo_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." && pwd -P)"
-DATASET_NAME="${DATASET_NAME:-crane_b_magnet_onoff_power}"
+DATASET_NAME="${DATASET_NAME:-crane_b_magnet_onoff_loadpower}"
 DATA_ROOT="${DATA_ROOT:?set DATA_ROOT to the RLDS root that holds $DATASET_NAME/}"
 BASE_MODEL="${BASE_MODEL:?set BASE_MODEL to the openvla-7b directory}"
 RUN_ROOT="${RUN_ROOT:-$repo_dir/checkpoints}"

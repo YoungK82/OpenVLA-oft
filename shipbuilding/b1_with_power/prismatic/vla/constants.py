@@ -47,7 +47,7 @@ SO101_CONSTANTS = {
 CRANE_CONSTANTS = {
     "NUM_ACTIONS_CHUNK": 8,
     "ACTION_DIM": 10,
-    "PROPRIO_DIM": 4,
+    "PROPRIO_DIM": 3,  # crane position x, y, z (b1: the load is in the instruction)
     "ACTION_PROPRIO_NORMALIZATION_TYPE": NormalizationType.BOUNDS,
 }
 

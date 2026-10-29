@@ -39,7 +39,7 @@ def query(endpoint: str, step, timeout: float) -> np.ndarray:
     payload = {
         "full_image": observation["cam1_image"].numpy(),
         "additional_images": [observation["cam2_image"].numpy(), observation["cam3_image"].numpy()],
-        "state": observation["state"].numpy(),
+        "state": observation["crane_pos"].numpy(),  # proprio = crane position x, y, z
         "instruction": _text(step["language_instruction"]),
     }
     response = requests.post(endpoint, json=payload, timeout=timeout)

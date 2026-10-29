@@ -722,7 +722,7 @@ OXE_DATASET_CONFIGS = {
     "crane_b_magnet_onoff": {
         "image_obs_keys": {"primary": "cam1_image", "secondary": "cam2_image", "tertiary": "cam3_image"},
         "depth_obs_keys": {"primary": None, "secondary": None, "wrist": None},
-        "state_obs_keys": ["state"],
+        "state_obs_keys": ["crane_pos"],  # x, y, z; the load is in the instruction text
         "state_encoding": StateEncoding.CRANE_LOAD_POS,
         "action_encoding": ActionEncoding.MAGNET_ONOFF_10,
     },

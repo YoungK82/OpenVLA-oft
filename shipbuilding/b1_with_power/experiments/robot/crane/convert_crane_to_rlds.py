@@ -119,7 +119,7 @@ def split_by_date(episodes: list[Episode], counts: dict[str, int], seed: int) ->
 
 
 class CraneMagnetOnoff(tfds.core.GeneratorBasedBuilder):
-    """Magnet crane plate-moving episodes: three exo cameras, 4D state, 10 magnet on/off commands."""
+    """Magnet crane plate-moving episodes: three exo cameras, 4D state (+ crane_pos = x/y/z), 10 magnet on/off commands."""
 
     name = DATASET_NAME
     pkg_dir_path = Path(__file__).parent
@@ -144,6 +144,8 @@ class CraneMagnetOnoff(tfds.core.GeneratorBasedBuilder):
                             "observation": {
                                 **{key: image for key in CAMERA_FIELDS},
                                 "state": tfds.features.Tensor(shape=(len(STATE_NAMES),), dtype=np.float32),
+                                # Proprio input: crane position x, y, z (= state[1:]); the load goes into the language
+                                "crane_pos": tfds.features.Tensor(shape=(len(STATE_NAMES) - 1,), dtype=np.float32),
                                 # Raw value kept (NaN = power stage off); the instruction text carries it in `power` mode
                                 "magnet_power_level": tfds.features.Tensor(shape=(1,), dtype=np.float32),
                             },
@@ -210,10 +212,13 @@ class CraneMagnetOnoff(tfds.core.GeneratorBasedBuilder):
                 "observation": {
                     **{key: next(frames[key]) for key in CAMERA_FIELDS},
                     "state": states[step_index],
+                    "crane_pos": states[step_index, 1:],
                     "magnet_power_level": power[step_index],
                 },
                 "action": actions[step_index],
-                "language_instruction": instruction_text(episode.task, float(power[step_index, 0]), self.language_mode),
+                "language_instruction": instruction_text(
+                    episode.task, float(states[step_index, 0]), float(power[step_index, 0]), self.language_mode
+                ),
                 "episode_task": episode.task,
                 "is_first": step_index == 0,
                 "is_last": step_index == last,
@@ -244,7 +249,7 @@ def parse_args() -> argparse.Namespace:
         "--language",
         choices=LANGUAGE_MODES,
         default=LANGUAGE_MODE,
-        help="power: task + this frame's magnet power level; task: the episode task only",
+        help="load_power: task + this frame's load and magnet power level; task: the episode task only",
     )
     parser.add_argument(
         "--validation-per-date",
