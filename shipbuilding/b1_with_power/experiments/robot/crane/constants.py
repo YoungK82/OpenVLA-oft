@@ -18,3 +18,12 @@ DATASET_NAME = "crane_b_magnet_onoff_loadpower"
 LANGUAGE_MODE = "load_power"
 # Validation episodes picked at random within each date (YYYYMMDD -> count)
 VALIDATION_PER_DATE = {"20261012": 1, "20261013": 6, "20261014": 3}
+# Episodes left out of the RLDS dataset (bad recordings). The validation split is still drawn from all folders,
+# so the same validation TIDs come out as before these were dropped.
+EXCLUDED_TIDS = (
+    "2026101310335401",
+    "2026101315232601",
+    "2026101316261101",  # recording cut mid-episode
+    "2026101413483701",
+    "2026101416333501",
+)

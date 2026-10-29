@@ -20,6 +20,7 @@ from experiments.robot.crane.constants import (
     CAMERA_FIELDS,
     CONTROL_FREQUENCY,
     DATASET_NAME,
+    EXCLUDED_TIDS,
     LANGUAGE_MODE,
     MAGNET_NAMES,
     STATE_NAMES,
@@ -277,7 +278,11 @@ def main() -> None:
             problems.append(f"{folder.name}: {error}")
     if problems:
         raise SystemExit("Fix these episode folders before converting:\n  " + "\n  ".join(problems))
+    # Split before dropping EXCLUDED_TIDS so the validation TIDs stay those of the full 75-episode set
     validation_tids = split_by_date(episodes, args.validation_per_date, args.split_seed)
+    if validation_tids & set(EXCLUDED_TIDS):
+        raise ValueError(f"Excluded TIDs drawn for validation: {sorted(validation_tids & set(EXCLUDED_TIDS))}")
+    episodes = [e for e in episodes if e.tid not in EXCLUDED_TIDS]
 
     builder = CraneMagnetOnoff(
         data_dir=str(args.output_root),
@@ -301,6 +306,7 @@ def main() -> None:
         "language_mode": args.language,
         "split_seed": args.split_seed,
         "validation_per_date": args.validation_per_date,
+        "excluded_tids": sorted(EXCLUDED_TIDS),
         "validation_tids": sorted(validation_tids),
         "training_tids": sorted(e.tid for e in episodes if e.tid not in validation_tids),
         "episodes": [
