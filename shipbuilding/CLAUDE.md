@@ -81,12 +81,14 @@ $PY experiments/robot/crane/eval_server_on_rlds.py --data-root ~/datasets/rlds -
 - 데이터 크기: train 65 에피소드 157,865프레임, validation 10 에피소드 22,240프레임. batch 8이면 1 epoch ≈ 19.7K steps.
 - **메모리: batch 8은 약 83GB 이상 필요** (gradient checkpointing 없음, 샘플당 약 940토큰의 활성값 + 비전 인코더 역전파).
   aga01 GPU 1(96GB, 다른 사용자 13GB 사용 중)에서 batch 8은 OOM(81.8GB에서 실패, 2026-10-29). SO-101도 batch 8에 약 88GB가 필요했다.
-  → aga01은 `BATCH_SIZE=4 GRAD_ACCUM=2`(유효 8) 권장. Hawk A100 40GB는 batch 1~2 + 누적(또는 여러 GPU) 필요(미측정).
+  → aga01은 `BATCH_SIZE=4 GRAD_ACCUM=2`(유효 8) 권장. Hawk A100 40GB: batch 2는 첫 스텝 OOM(39.5GB 꽉 참), batch 1은 정상
+  (2026-10-29 측정). GPU 2장 × batch 1 × 누적 4 = 유효 8에서 약 3.2초/스텝 → 25K ≈ 22시간.
 - 과적합 주의: 지시문 75개가 전부 다름(강판 번호 = 사실상 에피소드 ID)이라 FiLM으로 에피소드별 타이밍을 외울 수 있다.
   체크포인트는 train L1이 아니라 validation(마그넷별 정확도, 10개 모두 맞춘 비율, on/off 시점 오차)으로 고른다.
 - 같은 GPU 종류에서 병합·평가한다(OFT 권고). 체크포인트는 병합 안 된 상태로 저장된다(`--merge_lora_during_training False`).
 
 ## 학습 전에 사용자가 정할 데이터 특성 (교차 확인에서 확인됨, 버그 아님)
+첫 Hawk 학습(2026-10-29)은 아래를 모두 **그대로 둔 채**(패딩 유지, 1프레임 에피소드 포함) 진행했다. 바꾸려면 aga01에서 재변환.
 1. 모든 에피소드 앞뒤 150프레임(5초)씩 패딩: state 전부 0, 마그넷 세기 NaN, 마그넷 전부 OFF. 전체의 12.5%.
    첫 ON이 75개 중 68개에서 정확히 156번째 프레임 → "state 0이면 OFF", "5초 뒤 켜기" 같은 지름길 위험.
    정규화 최솟값도 0이 되어 실제 x는 약 [-0.73, 1], y는 약 [-0.68, 1]만 씀. 유지할지 잘라낼지(자르면 재변환) 미정.
@@ -103,14 +105,29 @@ $PY experiments/robot/crane/eval_server_on_rlds.py --data-root ~/datasets/rlds -
   다른 작업이 끝나기를 기다렸다가 한꺼번에 보고하지 않는다. 여러 작업이 동시에 돌면 끝난 순서대로 짧게 보고하고,
   아직 돌고 있는 작업을 함께 적는다. 대기 중이면 무엇을 기다리는지, 대략 언제 끝나는지 알린다.
 - Hawk 클러스터(SLURM, job 12시간 제한, A100 40GB)용 SO-101 스크립트는 `../so101_misc/cluster_transfer/`에 있다(자동 재제출 참고용).
-  크레인용 SLURM 스크립트는 아직 없다. 접속 정보는 레포에 적지 않는다. Hawk 계정은 공용이므로 비밀번호·토큰을 파일이나 프롬프트에 남기지 않는다.
+- 크레인 Hawk 학습: 각 폴더 `experiments/robot/crane/slurm_train_crane.sbatch`(사용법은 상단 주석, 두 폴더는 폴더·데이터셋·job 이름만 다름).
+  - 이 계정은 SO-101 문서의 `n-gpu`/`n-qos`(12시간)가 아니라 **account `m-gpu` / QoS `m-qos`**(job당 최대 36시간, GPU 최대 4장).
+  - job 24시간 = job 하나의 시간일 뿐, 학습 길이가 아님. 23시간 35분에 STOP → 저장 → 자기 자신 재제출 → `--resume_from`으로
+    정확히 이어감(250스텝마다 resume 상태 갱신). MAX_STEPS 도달 또는 수동 `touch <run_dir>/STOP`이면 끝. 오류 종료는 연속 2번까지만
+    재제출(`CRASH_COUNT`), 노드 장애는 `--requeue`. GPU 2장 STOP·resume은 Hawk smoke로 확인함(2026-10-29).
+  - 기본값: GPU 2장, 유효 batch 8(1×2×누적 4), **25K 스텝(≈1.3 epoch), LR 5e-4 고정(감소 없음)** — 사용자 결정. `LR_DECAY=1`이면
+    10K~20K에 자동 감소. 예전 120K(train_crane.sh)는 논문 스텝 수를 batch 차이 없이 가져온 값이라 버림(논문 ALOHA는 batch 32×100K,
+    LIBERO는 batch 64×150K). 25K에서도 validation이 좋아지면 `<run_dir>/plan.env`의 `MAX_STEPS`만 늘려 이어서 학습.
+  - job 이름: `yhkim-crane-oft-power`(b1), `yhkim-crane-oft-nopower`(b2). 출력은 제출 폴더의 `slurm-<job이름>-<jobid>.out`.
+  - Hawk 경로: env·base 모델은 `~/yhkim/so101-openvla-oft/`(env는 transformers fork), RLDS는 `~/yhkim/datasets/rlds/`.
+    스크립트는 `conda activate` 앞뒤로 `set +u`/`set -u` 필요(conda hook이 정의 안 된 변수를 읽어 job이 바로 죽음).
+- 접속 정보는 레포에 적지 않는다. Hawk 계정은 공용이므로 비밀번호·토큰을 파일이나 프롬프트에 남기지 않는다.
 - Hawk에서는 Claude를 로그인 노드에서 실행하고(계산 노드는 인터넷 없음), 학습은 sbatch로 돌린다.
   코드는 한 곳에서만 고치고 GitHub로 맞춘다(두 세션이 같은 파일을 동시에 고치지 않는다).
 
-## 진행 상황 (2026-10-29 10:00)
+## 진행 상황 (2026-10-29 10:50)
 - 완료: b1·b2 구현, 75개 전체 RLDS 변환(aga01 `~/datasets/rlds/crane_b_magnet_onoff_{power,nopower}/1.0.0`, 각 20GB,
   train 65 / val 10), 전체 검증 통과, 교차 확인(모델 코드 원본과 동일, parquet·영상·카메라·프레임 일치, 학습 배치 정상) 통과.
 - `finetune.py`에 exact resume·자동 LR 감소 이식, STOP→재시작 테스트 통과. smoke(10스텝, FiLM+proprio, 병합→서버 (8,10)) b1·b2 통과.
 - 커밋 `abc89c0`(shipbuilding 추가). push는 사용자가 토큰으로 직접 한다(이 서버엔 GitHub·Hawk SSH 키가 없음).
-- RLDS를 Hawk `/home/p163g26/yhkim/datasets/rlds/`로 보내는 rsync는 사용자가 직접 실행 중(첫 시도에서 오류 — 원인 확인 필요).
-- **학습은 시작하지 않았다.** 학습 장소(aga01 또는 Hawk), batch, 위 "학습 전에 정할 데이터 특성"은 사용자가 결정한다.
+- RLDS power·nopower 둘 다 Hawk `~/yhkim/datasets/rlds/`로 전송 완료(각 75개 파일, 20GB).
+- Hawk SLURM 스크립트 추가, smoke(OOM 확인 → batch 1, STOP·resume Step 23→60) 통과.
+- **Hawk에서 학습 중 (2026-10-29 10:33~, hawk02):** b1 power = job 56520, b2 nopower = job 56522. 각 GPU 2장, 25K 스텝,
+  약 22시간 예상. 체크포인트 `<폴더>/checkpoints/crane_b_magnet_onoff_{power,nopower}--{5000,...,25000}_chkpt`(병합 안 됨).
+- 다음: 체크포인트를 aga01로 가져와(`training_state.pt` 제외) 병합 → `serve_crane.sh` → `eval_server_on_rlds.py`로 b1·b2 비교.
+- Hawk에서 추가한 `slurm_train_crane.sbatch` 2개와 이 파일 수정은 아직 커밋 안 함.
