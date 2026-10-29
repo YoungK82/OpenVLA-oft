@@ -71,21 +71,46 @@ $PY experiments/robot/crane/eval_server_on_rlds.py --data-root ~/datasets/rlds -
   고쳐 쓰므로, 테스트 때는 safetensors만 링크하고 나머지는 복사한 사본 폴더를 `BASE_MODEL`로 쓴다.
 - 평가 지표: 마그넷별 정확도(0.5 기준), 10개 모두 맞춘 비율, on/off 바뀌는 시점 오차(프레임)와 놓친 개수.
 
+## 학습이 어떻게 돌아가는가 (finetune.py, 모델 코드는 원본 그대로)
+- 한 샘플 = cam1~3 이미지(각 224, 패치 256개 → 768토큰) + 지시문(약 90토큰) + state proprio 토큰 1개 + action 자리 80토큰(8×10).
+  LLM(Llama-2 7B)이 이 약 940토큰을 bidirectional로 한 번에 보고, action 자리 80개의 출력을 L1 회귀 헤드가 (8, 10) 값으로 바꾼다.
+  정답은 0/1을 -1/1로 정규화한 값, 손실은 L1. 추론 때는 되돌린 뒤 0.5 기준으로 on/off.
+- 학습 대상: LoRA(rank 32, LLM과 비전 인코더의 모든 linear) + FiLM 층 + proprio projector + action head. 7B 본체는 고정.
+- 옵티마이저 AdamW(lr 5e-4, 기본값), 스케줄 MultiStepLR 10배 감소 1회. `--auto_lr_decay`면 train L1이 정체될 때 감소
+  (`MIN_DECAY_STEP` 이후, 늦어도 `DECAY_STEP`). OFT+ ALOHA 원본은 8 GPU×batch 4, 50K에서 감소, 100K steps.
+- 데이터 크기: train 65 에피소드 157,865프레임, validation 10 에피소드 22,240프레임. batch 8이면 1 epoch ≈ 19.7K steps.
+- **메모리: batch 8은 약 83GB 이상 필요** (gradient checkpointing 없음, 샘플당 약 940토큰의 활성값 + 비전 인코더 역전파).
+  aga01 GPU 1(96GB, 다른 사용자 13GB 사용 중)에서 batch 8은 OOM(81.8GB에서 실패, 2026-10-29). SO-101도 batch 8에 약 88GB가 필요했다.
+  → aga01은 `BATCH_SIZE=4 GRAD_ACCUM=2`(유효 8) 권장. Hawk A100 40GB는 batch 1~2 + 누적(또는 여러 GPU) 필요(미측정).
+- 과적합 주의: 지시문 75개가 전부 다름(강판 번호 = 사실상 에피소드 ID)이라 FiLM으로 에피소드별 타이밍을 외울 수 있다.
+  체크포인트는 train L1이 아니라 validation(마그넷별 정확도, 10개 모두 맞춘 비율, on/off 시점 오차)으로 고른다.
+- 같은 GPU 종류에서 병합·평가한다(OFT 권고). 체크포인트는 병합 안 된 상태로 저장된다(`--merge_lora_during_training False`).
+
+## 학습 전에 사용자가 정할 데이터 특성 (교차 확인에서 확인됨, 버그 아님)
+1. 모든 에피소드 앞뒤 150프레임(5초)씩 패딩: state 전부 0, 마그넷 세기 NaN, 마그넷 전부 OFF. 전체의 12.5%.
+   첫 ON이 75개 중 68개에서 정확히 156번째 프레임 → "state 0이면 OFF", "5초 뒤 켜기" 같은 지름길 위험.
+   정규화 최솟값도 0이 되어 실제 x는 약 [-0.73, 1], y는 약 [-0.68, 1]만 씀. 유지할지 잘라낼지(자르면 재변환) 미정.
+2. 마그넷이 1프레임만 켜진 train 에피소드 2개(`2026101315232601`, `2026101416333501`): 제외할지 미정.
+3. validation에만 있는 패턴(z만 0인 프레임, 조합 `0000111100` 등) → val 정확도가 모델과 무관하게 낮을 수 있음.
+4. b1: 마그넷 세기 문구가 정답을 거의 드러냄(의도된 설계, b2와 비교). `0단`(10개 에피소드)과 `꺼짐`(NaN)이 다른 문구 — 같게 볼지 미정.
+5. on/off가 바뀌는 순간은 action chunk의 0.8%뿐 → 평균 정확도보다 시점 오차로 평가.
+
 ## 서버·GPU 규칙
-- 공용 서버(aga01, RTX PRO 6000 96GB × 2). **GPU를 쓰기 전에 어느 GPU를 쓸지 사용자에게 알린다.** 사용자가 이 작업의 smoke는 GPU 0으로 정했다.
+- 공용 서버(aga01, RTX PRO 6000 96GB × 2). **GPU를 쓰기 전에 어느 GPU를 쓸지 사용자에게 알리고, 다른 사용자의 사용량을 먼저 확인한다.**
+  (2026-10-29: GPU 0은 다른 사용자가 92GB 사용 중이어서 사용자가 GPU 1로 지정했다.)
 - 오래 걸리는 작업(변환, 학습)은 tmux에서 돌린다.
 - 작업(백그라운드 작업, tmux 실행, 테스트, 변환, 파일 작성 등)이 하나 끝나면 **그 즉시 결과를 보고한다.**
   다른 작업이 끝나기를 기다렸다가 한꺼번에 보고하지 않는다. 여러 작업이 동시에 돌면 끝난 순서대로 짧게 보고하고,
   아직 돌고 있는 작업을 함께 적는다. 대기 중이면 무엇을 기다리는지, 대략 언제 끝나는지 알린다.
-- Hawk 클러스터(SLURM, job 12시간 제한)용 스크립트는 `../so101_misc/cluster_transfer/`에 있다(exact resume, 자동 재제출). 접속 정보는 레포에 적지 않는다.
+- Hawk 클러스터(SLURM, job 12시간 제한, A100 40GB)용 SO-101 스크립트는 `../so101_misc/cluster_transfer/`에 있다(자동 재제출 참고용).
+  크레인용 SLURM 스크립트는 아직 없다. 접속 정보는 레포에 적지 않는다. Hawk 계정은 공용이므로 비밀번호·토큰을 파일이나 프롬프트에 남기지 않는다.
+- Hawk에서는 Claude를 로그인 노드에서 실행하고(계산 노드는 인터넷 없음), 학습은 sbatch로 돌린다.
+  코드는 한 곳에서만 고치고 GitHub로 맞춘다(두 세션이 같은 파일을 동시에 고치지 않는다).
 
-## 진행 상황 (2026-10-29 02:00)
-- 완료: 두 폴더 구현, 75개 메타데이터 점검, 4개 에피소드 변환·검증·로더 확인, GPU 0 smoke(b1·b2 통과).
-- `finetune.py`에 Hawk용 exact resume·자동 LR 감소를 이식(`--resume_from`, `--resume_save_freq`, STOP 파일,
-  `--auto_lr_decay`). GPU 0에서 STOP→재시작 테스트 통과(step 6에서 멈추고 이어서 step 10 완료).
-- `train_crane.sh` 기본값: 1 GPU, batch 8(누적 없음, 1 epoch ≈ 19.7K steps), lr 5e-4, 최대 120K, LR 감소 20K~80K 사이
-  자동, 검증·저장 5K마다, 재개용 저장 250마다, 자동 재개, `STOP_AT=HH:MM`.
-- 진행 중: b1·b2 전체 RLDS 변환(tmux `convert-b1_with_power`, `convert-b2_without_power`, CPU) → `~/datasets/rlds/`,
-  로그 `~/datasets/rlds/logs/convert_*.log`.
-- **학습은 시작하지 않았다. 학습 여부·설정은 사용자가 결정한다.** 속도 측정(batch 8)도 하지 않았다.
-- 커밋·push는 아직 안 함.
+## 진행 상황 (2026-10-29 10:00)
+- 완료: b1·b2 구현, 75개 전체 RLDS 변환(aga01 `~/datasets/rlds/crane_b_magnet_onoff_{power,nopower}/1.0.0`, 각 20GB,
+  train 65 / val 10), 전체 검증 통과, 교차 확인(모델 코드 원본과 동일, parquet·영상·카메라·프레임 일치, 학습 배치 정상) 통과.
+- `finetune.py`에 exact resume·자동 LR 감소 이식, STOP→재시작 테스트 통과. smoke(10스텝, FiLM+proprio, 병합→서버 (8,10)) b1·b2 통과.
+- 커밋 `abc89c0`(shipbuilding 추가). push는 사용자가 토큰으로 직접 한다(이 서버엔 GitHub·Hawk SSH 키가 없음).
+- RLDS를 Hawk `/home/p163g26/yhkim/datasets/rlds/`로 보내는 rsync는 사용자가 직접 실행 중(첫 시도에서 오류 — 원인 확인 필요).
+- **학습은 시작하지 않았다.** 학습 장소(aga01 또는 Hawk), batch, 위 "학습 전에 정할 데이터 특성"은 사용자가 결정한다.
