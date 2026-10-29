@@ -34,7 +34,12 @@ SO-101(`../so101/`)을 새 하드웨어에 붙였던 방식을 그대로 따른�
     proprio = 크레인 위치 x, y, z(3차원, RLDS 키 `crane_pos`). 하중은 언어로만 들어간다. 데이터셋 `crane_b_magnet_onoff_loadpower`.
     (예전 `crane_b_magnet_onoff_power` = 마그넷 세기만 언어 + state 4차원 proprio. Hawk job 56520으로 학습 후 종료, 이후 이 설계로 교체.)
   - `b2_without_power/`: 지시문 = task만, proprio = state 4차원(하중, x, y, z). 데이터셋 `crane_b_magnet_onoff_nopower`.
-  - 둘 다 `--use_proprio True`. b1과 b2는 하중의 위치(언어 vs proprio)와 마그넷 세기 유무 두 가지가 다르다.
+  - `b3_proprio_power/` (2026-10-29 사용자 요청, b1 복사본, 교수님이 b1과 함께 학습 요청): 지시문 = task만,
+    proprio = `[x, y, z, load, power]` 5차원(RLDS 키 `proprio`, `crane_utils.proprio_vector`; power NaN(꺼짐) → -1,
+    0단은 마그넷 ON 중에만 나오므로 0으로 따로 둠). 데이터셋 `crane_b_magnet_onoff_proprio_power`, job `yhkim-crane-oft-proprio-power`.
+    세기는 언어보다 proprio에서 더 깨끗한 누수 신호가 된다(아래 우려 참고).
+    세기 값 전체: 5단 137,757 / NaN 34,365 / 3단 7,438 / 0단 542 / 4단 3프레임(75개 기준). validation 10개는 5단·NaN만 있음.
+  - 셋 다 `--use_proprio True`. b1과 b2는 하중의 위치(언어 vs proprio)와 마그넷 세기 유무 두 가지가 다르다.
   - 주의: 원본 `observation.state`는 데이터 제공 측 정의상 `[load_total_t, x, y, z]`라 하중이 포함돼 있다.
   - 이전 A안(task만, proprio 없음)과 "하중·위치까지 텍스트로" 안은 폐기했다.
 - 카메라: cam1 = exo_1(CAM1), cam2 = exo(CAM2), cam3 = exo_3(CAM3) → RLDS `cam1/2/3_image` → `primary/secondary/tertiary`.
@@ -162,3 +167,7 @@ $PY experiments/robot/crane/eval_server_on_rlds.py --data-root ~/datasets/rlds -
 - (2026-10-29 저녁) Hawk: b1·b2 학습·체크포인트·로그 전부 삭제(데이터 정리 때문). RLDS power·nopower를 70개(train 60/val 10)로 정리.
   sbatch의 `torchrun --standalone`을 loopback rendezvous로 바꿈(hawk03은 FQDN이 접속 불가 `nhmgmt.cluster.com`). 원본 데이터는 Hawk에도
   `~/shared/2026shipbuildingAX/Data_201012-201014`에 있다. aga01 RLDS는 아직 75개 그대로 → 쓰려면 재변환.
+- (2026-10-29 저녁) aga01: loadpower·nopower·proprio_power 세 RLDS를 `EXCLUDED_TIDS` 적용(train 60/val 10)으로 재변환.
+  제외 전 RLDS는 `~/datasets/rlds_with_bad_episodes_20261029/`. Hawk 브랜치 `crane-hawk-data-cleanup`(70446e3)은 main에 merge.
+- 주의: Hawk의 예전 `crane_b_magnet_onoff_power`(지시문 task + 세기, proprio state 4차원)는 폐기한 b1 설계다.
+  지금 b1 = `loadpower`, Hawk에는 loadpower·proprio_power RLDS가 없어 aga01에서 전송해야 한다.
