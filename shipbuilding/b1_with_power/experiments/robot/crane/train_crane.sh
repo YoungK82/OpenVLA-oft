@@ -7,7 +7,7 @@
 # continues exactly from <RUN_ROOT>/<RUN_ID>--resume_latest (LoRA, heads, FiLM backbone, optimizer, LR schedule, step).
 # STOP_AT=HH:MM writes STOP by itself at that clock time (e.g. STOP_AT=09:50). Extra finetune.py options can follow.
 #
-# Schedule (OFT+ recipe on 1 GPU): batch 8 (no accumulation; ~19.7K steps per epoch), LR 5e-4, one 10x decay when train L1
+# Schedule (OFT+ recipe on 1 GPU): batch 8 (no accumulation; ~18.8K steps per epoch), LR 5e-4, one 10x decay when train L1
 # plateaus (not before MIN_DECAY_STEP, at the latest DECAY_STEP), MAX_STEPS cap. Validation + checkpoint every SAVE_FREQ;
 # pick the checkpoint by validation (overfitting guard), not by train L1.
 set -euo pipefail

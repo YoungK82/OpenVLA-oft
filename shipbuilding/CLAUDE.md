@@ -78,7 +78,7 @@ $PY experiments/robot/crane/eval_server_on_rlds.py --data-root ~/datasets/rlds -
 - 학습 대상: LoRA(rank 32, LLM과 비전 인코더의 모든 linear) + FiLM 층 + proprio projector + action head. 7B 본체는 고정.
 - 옵티마이저 AdamW(lr 5e-4, 기본값), 스케줄 MultiStepLR 10배 감소 1회. `--auto_lr_decay`면 train L1이 정체될 때 감소
   (`MIN_DECAY_STEP` 이후, 늦어도 `DECAY_STEP`). OFT+ ALOHA 원본은 8 GPU×batch 4, 50K에서 감소, 100K steps.
-- 데이터 크기: train 65 에피소드 157,865프레임, validation 10 에피소드 22,240프레임. batch 8이면 1 epoch ≈ 19.7K steps.
+- 데이터 크기: train 60 에피소드 150,330프레임, validation 10 에피소드 22,240프레임. batch 8이면 1 epoch ≈ 18.8K steps.
 - **메모리: batch 8은 약 83GB 이상 필요** (gradient checkpointing 없음, 샘플당 약 940토큰의 활성값 + 비전 인코더 역전파).
   aga01 GPU 1(96GB, 다른 사용자 13GB 사용 중)에서 batch 8은 OOM(81.8GB에서 실패, 2026-10-29). SO-101도 batch 8에 약 88GB가 필요했다.
   → aga01은 `BATCH_SIZE=4 GRAD_ACCUM=2`(유효 8) 권장. Hawk A100 40GB: batch 2는 첫 스텝 OOM(39.5GB 꽉 참), batch 1은 정상
@@ -92,7 +92,9 @@ $PY experiments/robot/crane/eval_server_on_rlds.py --data-root ~/datasets/rlds -
 1. 모든 에피소드 앞뒤 150프레임(5초)씩 패딩: state 전부 0, 마그넷 세기 NaN, 마그넷 전부 OFF. 전체의 12.5%.
    첫 ON이 75개 중 68개에서 정확히 156번째 프레임 → "state 0이면 OFF", "5초 뒤 켜기" 같은 지름길 위험.
    정규화 최솟값도 0이 되어 실제 x는 약 [-0.73, 1], y는 약 [-0.68, 1]만 씀. 유지할지 잘라낼지(자르면 재변환) 미정.
-2. 마그넷이 1프레임만 켜진 train 에피소드 2개(`2026101315232601`, `2026101416333501`): 제외할지 미정.
+2. (해결 2026-10-29) 사용자가 5개 삭제(`constants.py` `EXCLUDED_TIDS`, 모두 train): 1프레임 ON 2개 포함 4개 + 녹화가 중간에 잘린
+   `2026101316261101`. validation은 75개 전체에서 뽑은 뒤 빼므로 10개 그대로. Hawk RLDS는 원본 재변환 대신 tfrecord를 직접 고쳤다
+   (남은 parquet sha256이 원본과 일치 확인).
 3. validation에만 있는 패턴(z만 0인 프레임, 조합 `0000111100` 등) → val 정확도가 모델과 무관하게 낮을 수 있음.
 4. b1: 마그넷 세기 문구가 정답을 거의 드러냄(의도된 설계, b2와 비교). `0단`(10개 에피소드)과 `꺼짐`(NaN)이 다른 문구 — 같게 볼지 미정.
 5. on/off가 바뀌는 순간은 action chunk의 0.8%뿐 → 평균 정확도보다 시점 오차로 평가.
@@ -127,7 +129,10 @@ $PY experiments/robot/crane/eval_server_on_rlds.py --data-root ~/datasets/rlds -
 - 커밋 `abc89c0`(shipbuilding 추가). push는 사용자가 토큰으로 직접 한다(이 서버엔 GitHub·Hawk SSH 키가 없음).
 - RLDS power·nopower 둘 다 Hawk `~/yhkim/datasets/rlds/`로 전송 완료(각 75개 파일, 20GB).
 - Hawk SLURM 스크립트 추가, smoke(OOM 확인 → batch 1, STOP·resume Step 23→60) 통과.
-- **Hawk에서 학습 중 (2026-10-29 10:33~, hawk02):** b1 power = job 56520, b2 nopower = job 56522. 각 GPU 2장, 25K 스텝,
-  약 22시간 예상. 체크포인트 `<폴더>/checkpoints/crane_b_magnet_onoff_{power,nopower}--{5000,...,25000}_chkpt`(병합 안 됨).
+- 첫 Hawk 학습(2026-10-29 10:33~, b1 job 56520, b2 job 56522)은 데이터 정리 때문에 중단·삭제(아래). 다시 학습하면 체크포인트는
+  `<폴더>/checkpoints/crane_b_magnet_onoff_{power,nopower}--{5000,...,25000}_chkpt`(병합 안 됨).
 - 다음: 체크포인트를 aga01로 가져와(`training_state.pt` 제외) 병합 → `serve_crane.sh` → `eval_server_on_rlds.py`로 b1·b2 비교.
 - Hawk에서 추가한 `slurm_train_crane.sbatch` 2개와 이 파일 수정은 아직 커밋 안 함.
+- (2026-10-29 저녁) Hawk: b1·b2 학습·체크포인트·로그 전부 삭제(데이터 정리 때문). RLDS power·nopower를 70개(train 60/val 10)로 정리.
+  sbatch의 `torchrun --standalone`을 loopback rendezvous로 바꿈(hawk03은 FQDN이 접속 불가 `nhmgmt.cluster.com`). 원본 데이터는 Hawk에도
+  `~/shared/2026shipbuildingAX/Data_201012-201014`에 있다. aga01 RLDS는 아직 75개 그대로 → 쓰려면 재변환.

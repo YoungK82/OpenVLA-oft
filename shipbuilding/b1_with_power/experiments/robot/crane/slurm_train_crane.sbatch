@@ -34,7 +34,7 @@
 # - If compute nodes cannot run sbatch: AUTO_RESUBMIT=0 and chain from the login node with
 #   `sbatch --dependency=afterany:<jobid> ...`; jobs after the end exit at once.
 #
-# Schedule: effective batch 8 = BATCH_SIZE x GPUs x accumulation (~19.7K steps per epoch; 25K steps ~ 1.3 epochs),
+# Schedule: effective batch 8 = BATCH_SIZE x GPUs x accumulation (~18.8K steps per epoch; 25K steps ~ 1.33 epochs),
 # constant LR 5e-4 by default (LR_DECAY=0); LR_DECAY=1 adds one 10x decay when train L1 plateaus (not before
 # MIN_DECAY_STEP, at the latest DECAY_STEP). MAX_STEPS cap.
 # No train-L1 early stop: validation + checkpoint every SAVE_FREQ; pick the checkpoint by validation (overfitting guard).
@@ -151,7 +151,9 @@ wandb_args=()
 [[ -n "$WANDB_ENTITY" ]] && wandb_args=(--wandb_entity "$WANDB_ENTITY")
 
 set +e
-torchrun --standalone --nnodes 1 --nproc-per-node "$NUM_GPUS" vla-scripts/finetune.py \
+# --standalone rendezvous uses the FQDN, which on hawk03 resolves to unreachable nhmgmt.cluster.com; stay on loopback
+torchrun --nnodes 1 --nproc-per-node "$NUM_GPUS" --master-addr 127.0.0.1 --master-port $(( 20000 + ${SLURM_JOB_ID:-$$} % 20000 )) \
+  vla-scripts/finetune.py \
   --robot_platform crane --vla_path "$BASE_MODEL" \
   --data_root_dir "$DATA_ROOT" --dataset_name "$DATASET_NAME" --run_root_dir "$RUN_ROOT" --run_id_override "$RUN_ID" \
   --use_l1_regression True --use_diffusion False \
