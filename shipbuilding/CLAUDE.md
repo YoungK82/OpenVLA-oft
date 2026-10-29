@@ -124,8 +124,20 @@ $PY experiments/robot/crane/eval_server_on_rlds.py --data-root ~/datasets/rlds -
    첫 ON이 75개 중 68개에서 정확히 156번째 프레임 → "state 0이면 OFF", "5초 뒤 켜기" 같은 지름길 위험.
    정규화 최솟값도 0이 되어 실제 x는 약 [-0.73, 1], y는 약 [-0.68, 1]만 씀. 유지할지 잘라낼지(자르면 재변환) 미정.
 2. (해결 2026-10-29) 사용자가 5개 삭제(`constants.py` `EXCLUDED_TIDS`, 모두 train): 1프레임 ON 2개 포함 4개 + 녹화가 중간에 잘린
-   `2026101316261101`. validation은 75개 전체에서 뽑은 뒤 빼므로 10개 그대로. Hawk RLDS는 원본 재변환 대신 tfrecord를 직접 고쳤다
-   (남은 parquet sha256이 원본과 일치 확인).
+   `2026101316261101`. validation은 75개 전체에서 뽑은 뒤 빼므로 10개 그대로. Hawk RLDS는 원본 재변환 대신 tfrecord를 직접 고쳤고
+   (아래 "에피소드 빼기" 방법 2), aga01은 재변환했다(방법 1). 두 결과는 내용이 같다.
+
+## 이미 만든 RLDS에서 에피소드 빼기 (두 방법 모두 가능)
+1. **재변환:** `constants.py`의 `EXCLUDED_TIDS`에 TID 추가 → 기존 RLDS 폴더를 옮겨 두고 `convert_crane_to_rlds.py` 다시 실행
+   (기존 폴더가 있으면 TFDS가 재사용하므로 반드시 치운다) → `verify_rlds_dataset.py`. 데이터셋당 CPU 약 90분. 메타 파일이 자동으로 맞음.
+2. **tfrecord 직접 수정(Hawk 방식, 빠름):** 각 shard에서 `episode_metadata/tid`가 해당 TID인 레코드만 빼고 나머지 직렬화 바이트를 그대로
+   다시 쓴다. 남은 레코드는 재변환 결과와 같다. 함께 고칠 것:
+   - `dataset_info.json`: 해당 split의 `shardLengths`(빈 shard는 파일·항목 삭제, 파일 이름 `-of-NNNNN`과 개수 일치)와 `numBytes`.
+   - `crane_conversion_manifest.json`: `training_tids`/`episodes`에서 빼고 `excluded_tids` 기록(안 고치면 verify가 실패).
+   - 같은 폴더의 `dataset_statistics_*.json` 삭제(캐시 키가 `str(builder.info)`라 dataset_info를 고치면 새로 계산되지만, 옛 파일은 지운다).
+   - 코드의 `EXCLUDED_TIDS`도 같이 맞춘다(나중에 재변환해도 같은 결과가 나오게).
+   - **학습 job이 그 RLDS를 읽는 중에는 고치지 않는다**(같은 자리 덮어쓰기는 읽던 job을 깨뜨릴 수 있음). 고친 뒤 `verify_rlds_dataset.py`.
+   - 이번 5개 제외는 min/max가 그대로라(BOUNDS 정규화 불변) 이전 체크포인트 통계와도 어긋나지 않았다. 다른 TID를 뺄 때는 min/max를 다시 확인.
 3. validation에만 있는 패턴(z만 0인 프레임, 조합 `0000111100` 등) → val 정확도가 모델과 무관하게 낮을 수 있음.
 4. b1: 마그넷 세기 문구가 정답을 거의 드러냄(의도된 설계, b2와 비교). `0단`(10개 에피소드)과 `꺼짐`(NaN)이 다른 문구 — 같게 볼지 미정.
 5. on/off가 바뀌는 순간은 action chunk의 0.8%뿐 → 평균 정확도보다 시점 오차로 평가.
@@ -169,5 +181,8 @@ $PY experiments/robot/crane/eval_server_on_rlds.py --data-root ~/datasets/rlds -
   `~/shared/2026shipbuildingAX/Data_201012-201014`에 있다. aga01 RLDS는 아직 75개 그대로 → 쓰려면 재변환.
 - (2026-10-29 저녁) aga01: loadpower·nopower·proprio_power 세 RLDS를 `EXCLUDED_TIDS` 적용(train 60/val 10)으로 재변환.
   제외 전 RLDS는 `~/datasets/rlds_with_bad_episodes_20261029/`. Hawk 브랜치 `crane-hawk-data-cleanup`(70446e3)은 main에 merge.
+- (2026-10-29 20:52~) Hawk job 56610(hawk03, GPU 4장): 예전 b1 `crane_b_magnet_onoff_power`를 60/10 데이터로 학습 중.
+  사용자 결정으로 계속 진행(약 11시간). Hawk 코드는 브랜치 `crane-hawk-data-cleanup`에 그대로 두고, 이 job이 끝난 뒤 `main` pull
+  (중간에 pull하면 자동 재제출 job이 loadpower 설정으로 떠서 실패). 그다음 b3 학습.
 - 주의: Hawk의 예전 `crane_b_magnet_onoff_power`(지시문 task + 세기, proprio state 4차원)는 폐기한 b1 설계다.
   지금 b1 = `loadpower`, Hawk에는 loadpower·proprio_power RLDS가 없어 aga01에서 전송해야 한다.
