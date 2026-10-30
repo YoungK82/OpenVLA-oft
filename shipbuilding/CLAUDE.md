@@ -187,12 +187,16 @@ $PY experiments/robot/crane/eval_server_on_rlds.py --data-root ~/datasets/rlds -
 - (2026-10-29 저녁) aga01: loadpower·nopower·proprio_power 세 RLDS를 `EXCLUDED_TIDS` 적용(train 60/val 10)으로 재변환.
   제외 전 RLDS는 `~/datasets/rlds_with_bad_episodes_20261029/`. Hawk 브랜치 `crane-hawk-data-cleanup`(70446e3)은 main에 merge.
 - Hawk job 56610(2026-10-29 20:52 ~ 10-30 08:48, GPU 4장, 25K 완료): 예전 b1 `crane_b_magnet_onoff_power`(60/10).
-  = **b2**(언어 task + 세기, proprio 하중·x·y·z). val L1 5K 0.572 / 10K 0.464 / 15K 0.486 / 20K 0.534 / 25K 0.493.
+  = **b2**(언어 task + 세기, proprio 하중·x·y·z). val loss 5K 0.572 / 10K 0.464 / 15K 0.486 / 20K 0.534 / 25K 0.493
+  (curr_action_l1 0.572 / 0.470 / 0.485 / 0.529 / 0.491).
   2026-10-30 b2로 이름 정리: 체크포인트 `b2_state_power/checkpoints/crane_b_magnet_onoff_state_power--*`(통계 키도 새 이름),
   Hawk RLDS `crane_b_magnet_onoff_state_power`(예전 `power`를 옮기며 지시문의 0단을 `꺼짐`으로 다시 만듦; 체크포인트는 0단 문구로
   학습됨, 전체 0.3%), nopower RLDS 삭제. 학습 당시 코드는 커밋 70446e3의 b1_with_power(지금 b2와 0단 문구만 다름).
+  0단↔꺼짐 A/B(2026-10-30, 0단 train 프레임 75개, 지시문만 바꿈): 25K 첫 스텝 비트 3.2% 바뀜(2/7 에피소드, 마그넷 1개씩,
+  ON→OFF·OFF→ON 같은 비율), 10K 정확도 같음. validation에는 0단이 없어 영향 없음 → 재학습 안 함, 평가는 지금 코드(`꺼짐`)로.
 - (2026-10-30) Hawk main pull 후 b3 RLDS(aga01에서 rsync, 70개) 검증 통과. b3 첫 학습(job 56643)은 0단 처리 변경으로 시작 직후 중단·삭제.
   Hawk b3 RLDS는 proprio를 새 `proprio_vector`로 다시 계산해 tfrecord를 직접 고쳤다(영상 등 나머지 그대로).
-- (2026-10-30 ~) Hawk job 56656(hawk02, GPU 4장): b3 25K 학습 중(약 1.69초/스텝, 약 12시간).
+- (2026-10-30 ~) Hawk job 56656(hawk02, GPU 4장): b3 25K 학습 중(약 1.63초/스텝, 약 11.5시간).
+  val loss 5K 0.446(curr_action_l1 0.452).
 - aga01 할 일: b1 `loadpower`·b3 `proprio_power`는 0단 처리 변경으로 재변환, b2 `state_power`는 새로 변환(예전 `power`/`nopower` 대신).
   Hawk에는 b1 `loadpower` RLDS가 없어 변환 후 전송해야 한다.

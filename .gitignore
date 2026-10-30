@@ -151,3 +151,7 @@ data/
 # Rollout videos and wandb logs
 rollouts/
 wandb/
+
+# SLURM job logs
+slurm-*.out
+slurm-*.err
