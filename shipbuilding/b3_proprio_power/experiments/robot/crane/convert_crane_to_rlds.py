@@ -145,7 +145,7 @@ class CraneMagnetOnoff(tfds.core.GeneratorBasedBuilder):
                             "observation": {
                                 **{key: image for key in CAMERA_FIELDS},
                                 "state": tfds.features.Tensor(shape=(len(STATE_NAMES),), dtype=np.float32),
-                                # Proprio input: x, y, z, load, power (NaN power -> -1); see crane_utils.proprio_vector
+                                # Proprio input: x, y, z, load, power (NaN or 0단 = off -> 0); see crane_utils.proprio_vector
                                 "proprio": tfds.features.Tensor(shape=(len(PROPRIO_NAMES),), dtype=np.float32),
                                 # Raw value kept (NaN = power stage off)
                                 "magnet_power_level": tfds.features.Tensor(shape=(1,), dtype=np.float32),

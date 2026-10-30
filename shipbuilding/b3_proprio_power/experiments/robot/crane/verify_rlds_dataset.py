@@ -89,7 +89,7 @@ def main() -> None:
     print(f"Language mode: {manifest['language_mode']}; last instruction seen: {example!r}")
     print(f"Cameras (cam1, cam2, cam3): {list(CAMERA_FIELDS.values())}")
     print(f"{len(seen)} episodes / {total_steps} steps; ON ratio per magnet: {np.round(on_counts / total_steps, 3).tolist()}")
-    print(f"Proprio {list(PROPRIO_NAMES)}; power values (-1 = off): {dict(sorted(power_counts.items()))}")
+    print(f"Proprio {list(PROPRIO_NAMES)}; power values (0 = off: NaN or 0단): {dict(sorted(power_counts.items()))}")
     print("Magnet crane RLDS verification passed.")
 
 
