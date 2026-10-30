@@ -96,6 +96,7 @@ CUDA_VISIBLE_DEVICES= $PY experiments/robot/crane/convert_crane_to_rlds.py \
   --source-root /home/shared/2026shipbuildingAX/Data_201012-201014 --output-root ~/datasets/rlds   # CPU, 약 30프레임/s
 $PY experiments/robot/crane/verify_rlds_dataset.py --data-root ~/datasets/rlds
 CUDA_VISIBLE_DEVICES=0 DATA_ROOT=~/datasets/rlds BASE_MODEL=<openvla-7b> bash experiments/robot/crane/train_crane.sh
+#   aga01 GPU 2장: CUDA_VISIBLE_DEVICES=0,1 NPROC=2 BATCH_SIZE=2 GRAD_ACCUM=2 ... (유효 8; 아래 메모리 실측)
 #   병합: vla-scripts/merge_lora_weights_and_save.py (학습은 --merge_lora_during_training False 기본)
 CUDA_VISIBLE_DEVICES=0 VLA_PORT=8777 bash experiments/robot/crane/serve_crane.sh <checkpoint>
 $PY experiments/robot/crane/eval_server_on_rlds.py --data-root ~/datasets/rlds --server-endpoint http://127.0.0.1:8777/act
@@ -114,7 +115,11 @@ $PY experiments/robot/crane/eval_server_on_rlds.py --data-root ~/datasets/rlds -
 - 데이터 크기: train 60 에피소드 150,330프레임, validation 10 에피소드 22,240프레임. batch 8이면 1 epoch ≈ 18.8K steps.
 - **메모리: batch 8은 약 83GB 이상 필요** (gradient checkpointing 없음, 샘플당 약 940토큰의 활성값 + 비전 인코더 역전파).
   aga01 GPU 1(96GB, 다른 사용자 13GB 사용 중)에서 batch 8은 OOM(81.8GB에서 실패, 2026-10-29). SO-101도 batch 8에 약 88GB가 필요했다.
-  → aga01은 `BATCH_SIZE=4 GRAD_ACCUM=2`(유효 8) — 2026-10-31부터 `train_crane.sh` 기본값(25K, LR 고정도 Hawk와 같게 맞춤). Hawk A100 40GB: batch 2는 첫 스텝 OOM(39.5GB 꽉 참), batch 1은 정상
+  **aga01 RTX PRO 6000 × 2장 실측**(2026-10-31, b3 RLDS로 30스텝, `NPROC=2`, 유효 8, 다른 사용자가 GPU당 19GB·연산 100% 사용 중):
+  batch 4×누적 1 = nvidia-smi GPU0 64.6GB / GPU1 73.9GB(PyTorch 최대 58.9GiB), 1.66초/스텝;
+  같은 설정 + `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` = 61.3GB / 61.3GB, 1.57초/스텝;
+  **batch 2×누적 2 = 48.2GB / 47.8GB(PyTorch 42.1GiB), 2.09초/스텝 → 25K 약 14.5시간 + validation·저장.** 사용자가 batch 2×2 선택.
+  → aga01 1장은 `BATCH_SIZE=4 GRAD_ACCUM=2`(유효 8) — 2026-10-31부터 `train_crane.sh` 기본값(25K, LR 고정도 Hawk와 같게 맞춤). Hawk A100 40GB: batch 2는 첫 스텝 OOM(39.5GB 꽉 참), batch 1은 정상
   (2026-10-29 측정). GPU 2장 × batch 1 × 누적 4 = 유효 8에서 약 3.2초/스텝 → 25K ≈ 22시간.
   **A100 40GB × 4장(batch 1 × 누적 2 = 유효 8) 실측**(2026-10-31, b3 설정 60스텝 측정 job 56732, hawk02):
   GPU당 VRAM `nvidia-smi` 최대 약 34.9GB / 40GB(약 85%), PyTorch 최대 할당 32.8GiB(GPU별 차이 0.1GB 미만), 1.60초/스텝
@@ -214,3 +219,12 @@ $PY experiments/robot/crane/eval_server_on_rlds.py --data-root ~/datasets/rlds -
   0단 처리 변경 후 재변환하고 이 스크립트로 학습할 예정.
 - aga01 할 일: b1 `loadpower`·b3 `proprio_power`는 0단 처리 변경으로 재변환, b2 `state_power`는 새로 변환(예전 `power`/`nopower` 대신).
   Hawk에는 b1 `loadpower` RLDS가 없어 변환 후 전송해야 한다.
+- (2026-10-31) aga01: main pull(b2 → `b2_state_power`), 옛 `b2_without_power/`(남은 `__pycache__`)와 옛 RLDS `power`·`nopower` 삭제.
+  b1 `loadpower` 재변환(0단 = 꺼짐, 60/10). `train_crane.sh`에 `NPROC`(GPU 수, 기본 1) 추가.
+  base 모델 사본 `~/models/openvla-7b-47a0ec7-crane-b1/`(safetensors는 공유 폴더로 심볼릭 링크, 나머지 복사).
+- **aga01 b1 학습**(tmux `crane_b1_train`, 재변환 검증 통과 후 자동 시작): GPU 0·1, batch 2×2장×누적 2 = 유효 8, 25K, LR 5e-4 고정.
+  GPU 할당이 12시간 단위라 25K(약 15시간)를 한 번에 못 끝낼 수 있다. `train_crane.sh`가 250스텝마다
+  `checkpoints/crane_b_magnet_onoff_loadpower--resume_latest`를 갱신하므로, 끊기면 다음 할당 때 **같은 명령을 다시 실행**하면 정확히 이어간다
+  (예정된 정지는 `touch checkpoints/crane_b_magnet_onoff_loadpower/STOP` 또는 `STOP_AT=HH:MM`으로 저장 후 종료, 강제 종료 시 최대 250스텝 손실).
+  실행 명령: `cd b1_with_power && CUDA_VISIBLE_DEVICES=0,1 NPROC=2 BATCH_SIZE=2 GRAD_ACCUM=2 DATA_ROOT=~/datasets/rlds
+  BASE_MODEL=~/models/openvla-7b-47a0ec7-crane-b1 bash experiments/robot/crane/train_crane.sh`(tmux 안에서).
