@@ -12,7 +12,7 @@ CONTROL_FREQUENCY = 30
 ACTION_CHUNK_SIZE = 8  # Keep equal to CRANE_CONSTANTS["NUM_ACTIONS_CHUNK"] in prismatic/vla/constants.py
 
 # This folder's variant. b1_with_power: DATASET_NAME "crane_b_magnet_onoff_loadpower", LANGUAGE_MODE "load_power",
-# proprio = crane_pos (x, y, z). b2_without_power: DATASET_NAME "crane_b_magnet_onoff_nopower", LANGUAGE_MODE "task",
+# proprio = crane_pos (x, y, z). b2_state_power: DATASET_NAME "crane_b_magnet_onoff_state_power", LANGUAGE_MODE "power",
 # proprio = state (load, x, y, z).
 DATASET_NAME = "crane_b_magnet_onoff_loadpower"
 LANGUAGE_MODE = "load_power"

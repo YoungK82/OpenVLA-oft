@@ -14,7 +14,7 @@
 # Same recipe as train_crane.sh, split into 24 h jobs that chain themselves until MAX_STEPS.
 # Hawk rules (m-qos): max 36 h per job, max 4 GPUs at once, 16 cores per GPU (-n = 16 x GPUs).
 #
-# Usage (login node, from this folder: shipbuilding/b1_with_power, b2_without_power or b3_proprio_power):
+# Usage (login node, from this folder: shipbuilding/b1_with_power, b2_state_power or b3_proprio_power):
 #   conda activate ~/yhkim/so101-openvla-oft/env           # CONDA_EXE is passed on to the job
 #   PYTHONPATH=$PWD python experiments/robot/crane/verify_rlds_dataset.py --data-root ~/yhkim/datasets/rlds
 #   sbatch experiments/robot/crane/slurm_train_crane.sbatch

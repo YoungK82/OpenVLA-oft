@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#SBATCH --job-name=yhkim-crane-oft-nopower
+#SBATCH --job-name=yhkim-crane-oft-state-power
 #SBATCH --partition=a100_40g
 #SBATCH --account=m-gpu
 #SBATCH --qos=m-qos
@@ -10,11 +10,11 @@
 #SBATCH --requeue
 #SBATCH --output=slurm-%x-%j.out
 #SBATCH --error=slurm-%x-%j.err
-# Magnet crane OpenVLA-OFT fine-tuning on Hawk (A100 40GB): 3 exo cameras + language (FiLM) + 4D state proprio.
+# Magnet crane OpenVLA-OFT fine-tuning on Hawk (A100 40GB): 3 exo cameras + language (FiLM, task + magnet power level) + load/x/y/z state proprio.
 # Same recipe as train_crane.sh, split into 24 h jobs that chain themselves until MAX_STEPS.
 # Hawk rules (m-qos): max 36 h per job, max 4 GPUs at once, 16 cores per GPU (-n = 16 x GPUs).
 #
-# Usage (login node, from this folder: shipbuilding/b1_with_power or b2_without_power):
+# Usage (login node, from this folder: shipbuilding/b1_with_power, b2_state_power or b3_proprio_power):
 #   conda activate ~/yhkim/so101-openvla-oft/env           # CONDA_EXE is passed on to the job
 #   PYTHONPATH=$PWD python experiments/robot/crane/verify_rlds_dataset.py --data-root ~/yhkim/datasets/rlds
 #   sbatch experiments/robot/crane/slurm_train_crane.sbatch
@@ -46,7 +46,7 @@ set -euo pipefail
 
 # ---- Site paths (override with `sbatch --export=ALL,VAR=...`) ----
 WORK_DIR="${WORK_DIR:-$HOME/yhkim}"
-REPO_DIR="${REPO_DIR:-$WORK_DIR/OpenVLA-oft/shipbuilding/b2_without_power}"
+REPO_DIR="${REPO_DIR:-$WORK_DIR/OpenVLA-oft/shipbuilding/b2_state_power}"
 CONDA_SH="${CONDA_SH:-${CONDA_EXE:+$(dirname "$(dirname "$CONDA_EXE")")/etc/profile.d/conda.sh}}"
 CONDA_ENV="${CONDA_ENV:-$WORK_DIR/so101-openvla-oft/env}"
 BASE_MODEL="${BASE_MODEL:-$WORK_DIR/so101-openvla-oft/models/openvla-7b-47a0ec7}"
@@ -54,7 +54,7 @@ DATA_ROOT="${DATA_ROOT:-$WORK_DIR/datasets/rlds}"
 RUN_ROOT="${RUN_ROOT:-$REPO_DIR/checkpoints}"
 
 # ---- Recipe ----
-DATASET_NAME="${DATASET_NAME:-crane_b_magnet_onoff_nopower}"
+DATASET_NAME="${DATASET_NAME:-crane_b_magnet_onoff_state_power}"
 RUN_ID="${RUN_ID:-$DATASET_NAME}"
 BATCH_SIZE="${BATCH_SIZE:-1}"                # per GPU; batch 2 runs out of memory on A100 40GB (accumulation is recomputed)
 EFFECTIVE_BATCH="${EFFECTIVE_BATCH:-8}"

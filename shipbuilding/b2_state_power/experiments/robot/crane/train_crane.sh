@@ -12,7 +12,7 @@
 # pick the checkpoint by validation (overfitting guard), not by train L1.
 set -euo pipefail
 repo_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." && pwd -P)"
-DATASET_NAME="${DATASET_NAME:-crane_b_magnet_onoff_nopower}"
+DATASET_NAME="${DATASET_NAME:-crane_b_magnet_onoff_state_power}"
 DATA_ROOT="${DATA_ROOT:?set DATA_ROOT to the RLDS root that holds $DATASET_NAME/}"
 BASE_MODEL="${BASE_MODEL:?set BASE_MODEL to the openvla-7b directory}"
 RUN_ROOT="${RUN_ROOT:-$repo_dir/checkpoints}"

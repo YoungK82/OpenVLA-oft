@@ -29,22 +29,24 @@ SO-101(`../so101/`)을 새 하드웨어에 붙였던 방식을 그대로 따른�
 ## 결정된 설계
 - 교수님 방안: 1) parquet 정보를 언어로 넣어 모델 변경 없이 학습(먼저 할 것) → 1.5) 강재 스펙은 언어, 로드셀은 projector →
   2) projector 여러 개. 사용자 해석으로 1번은 **state = OFT proprio 토큰(ALOHA qpos와 같은 방식), 나머지 parquet 값 = 언어**.
-- 두 변형(차이는 `experiments/robot/crane/constants.py`와 학습 스크립트의 데이터셋 이름뿐):
+- 세 변형(사용자 계획, 2026-10-30 확정). 폴더마다 `experiments/robot/crane/constants.py`·`crane_utils.py`와 학습 스크립트가 다르다:
   - `b1_with_power/` (교수님 1번 방안): 지시문 = task + `. 하중 {load:.1f}t, 마그넷 세기 N단`(NaN·0단 → `꺼짐`),
     proprio = 크레인 위치 x, y, z(3차원, RLDS 키 `crane_pos`). 하중은 언어로만 들어간다. 데이터셋 `crane_b_magnet_onoff_loadpower`.
-    (예전 `crane_b_magnet_onoff_power` = 마그넷 세기만 언어 + state 4차원 proprio. Hawk job 56520으로 학습 후 종료, 이후 이 설계로 교체.)
-  - `b2_without_power/`: 지시문 = task만, proprio = state 4차원(하중, x, y, z). 데이터셋 `crane_b_magnet_onoff_nopower`.
+  - `b2_state_power/`: 지시문 = task + `. 마그넷 세기 N단`(NaN·0단 → `꺼짐`), proprio = state 4차원(하중, x, y, z).
+    데이터셋 `crane_b_magnet_onoff_state_power`, job `yhkim-crane-oft-state-power`. 예전 b1(`crane_b_magnet_onoff_power`)과 같은
+    설계라 2026-10-30에 이름을 b2로 옮겼다(Hawk job 56610 결과가 b2). 예전 b2(`b2_without_power`, 지시문 task만 + state 4차원,
+    데이터셋 `nopower`)는 계획에 없어 삭제했다(git 기록에만 남음).
   - `b3_proprio_power/` (2026-10-29 사용자 요청, b1 복사본, 교수님이 b1과 함께 학습 요청): 지시문 = task만,
     proprio = `[x, y, z, load, power]` 5차원(RLDS 키 `proprio`, `crane_utils.proprio_vector`; power NaN·0단(꺼짐) → 0,
     3/4/5단은 그대로). 데이터셋 `crane_b_magnet_onoff_proprio_power`, job `yhkim-crane-oft-proprio-power`.
     세기는 언어보다 proprio에서 더 깨끗한 누수 신호가 된다(아래 우려 참고).
     세기 값 전체: 5단 137,757 / NaN 34,365 / 3단 7,438 / 0단 542 / 4단 3프레임(75개 기준). validation 10개는 5단·NaN만 있음.
-  - 셋 다 `--use_proprio True`. b1과 b2는 하중의 위치(언어 vs proprio)와 마그넷 세기 유무 두 가지가 다르다.
+  - 셋 다 `--use_proprio True`. 마그넷 세기는 b1·b2 언어 / b3 proprio, 하중은 b1 언어 / b2·b3 proprio, x·y·z는 셋 다 proprio.
   - 주의: 원본 `observation.state`는 데이터 제공 측 정의상 `[load_total_t, x, y, z]`라 하중이 포함돼 있다.
   - 이전 A안(task만, proprio 없음)과 "하중·위치까지 텍스트로" 안은 폐기했다.
 - 카메라: cam1 = exo_1(CAM1), cam2 = exo(CAM2), cam3 = exo_3(CAM3) → RLDS `cam1/2/3_image` → `primary/secondary/tertiary`.
 - 256×256으로 저장(1920×1080을 눌러서 축소), 모델 입력 224.
-- `NUM_ACTIONS_CHUNK = 8`(약 0.27초), `ACTION_DIM = 10`, `PROPRIO_DIM` = b1 3 / b2 4, 정규화 `BOUNDS`(0/1 → -1/1, 그대로 복원).
+- `NUM_ACTIONS_CHUNK = 8`(약 0.27초), `ACTION_DIM = 10`, `PROPRIO_DIM` = b1 3 / b2 4 / b3 5, 정규화 `BOUNDS`(0/1 → -1/1, 그대로 복원).
 - FiLM 사용(`--use_film True`): 지시문이 에피소드마다 다르므로. FiLM은 지시문 토큰 임베딩 평균을 쓰므로 숫자는 거의 전달 안 됨.
 - validation 10개 = 날짜별 무작위 1/6/3개(seed 7). `constants.py`의 `VALIDATION_PER_DATE`.
 
@@ -52,21 +54,21 @@ SO-101(`../so101/`)을 새 하드웨어에 붙였던 방식을 그대로 따른�
 1. 처음 B안: 지시문 = task + 하중·주행·횡행·권상·마그넷 세기 전부, proprio 없음 → 사용자 결정으로 폐기.
 2. `crane_b_magnet_onoff_power`: 지시문 = task + 마그넷 세기, proprio = state 4차원.
    **문제:** 원본 `observation.state`가 `[load_total_t, x, y, z]`라 하중이 언어가 아니라 proprio로 들어가고 있었다.
-   교수님 1번 방안(parquet 값은 언어로)과 맞지 않아 폐기했다. Hawk로 이미 보낸 이 데이터셋은 쓰지 않는다.
+   교수님 1번 방안(parquet 값은 언어로)과 맞지 않아 b1에서는 뺐다. 이 설계는 2026-10-30에 b2(`b2_state_power`)가 됐다.
 3. 지금 `crane_b_magnet_onoff_loadpower`: 지시문 = task + `하중 {t}, 마그넷 세기 N단`, proprio = x, y, z(`crane_pos`).
    1번 방안대로 parquet 값을 전부 언어로 넣은 버전(상한선 실험용). 2026-10-29 11:02부터 aga01에서 전체 재변환.
 
 ## 핵심 우려: 입력이 정답(on/off 시점)을 미리 알려 준다
 모델이 영상을 보지 않고 아래 값들만으로 on/off를 맞힐 수 있다. 결과가 좋아도 영상 이해가 아니라 이 신호를 따라간 것일 수 있다.
-- **마그넷 세기**(b1 언어): 숫자면 99.9% ON, NaN이면 72% OFF. 마그넷이 꺼지는 바로 다음 프레임에 `꺼짐`으로 바뀐다
+- **마그넷 세기**(b1·b2 언어, b3 proprio): 숫자면 99.9% ON, NaN이면 72% OFF. 마그넷이 꺼지는 바로 다음 프레임에 `꺼짐`으로 바뀐다
   (예: OFF 2766 → 꺼짐 2767). 켜진 뒤 몇 초~수십 초 뒤에 `5단`이 된다. → **끄는 시점**을 그대로 알려 줌.
-- **하중**(b1 언어, b2 proprio): 실시간 측정이 아니라 ERP 이벤트 값을 유지한 계단형 값. 대부분 150번째 프레임(U 이벤트)에
+- **하중**(b1 언어, b2·b3 proprio): 실시간 측정이 아니라 ERP 이벤트 값을 유지한 계단형 값. 대부분 150번째 프레임(U 이벤트)에
   강판 무게로 뛰는데 마그넷 ON은 156번째 → 켜기 **6프레임 전에** 나타난다. 일부 에피소드는 훨씬 늦게 나온다(예: ON 156, 하중 1950).
   이동 중엔 0.1~0.2t만 오르내리고 끝(D)에서 0. 에피소드당 값 변화 중간값 5번. → **켜는 시점**을 알려 줌.
-- **크레인 위치 x, y, z**(b1·b2 proprio): 150번째 프레임(U)까지 0, 이후 ERP 값을 유지. 0 = OFF 구간이라 같은 성격의 단서.
+- **크레인 위치 x, y, z**(셋 다 proprio): 150번째 프레임(U)까지 0, 이후 ERP 값을 유지. 0 = OFF 구간이라 같은 성격의 단서.
 - 앞뒤 5초 패딩(state 0, 세기 NaN, 마그넷 OFF)과 첫 ON이 거의 항상 156번째 프레임인 고정 템플릿도 지름길이 된다.
 - 실제 운용 때 ERP 값(하중·위치)이 실시간으로 들어오는지 불확실하다 → 학습 때와 추론 때 입력이 다를 수 있다.
-- b2는 지시문에 세기를 안 넣지만 proprio에 하중이 있어 켜는 시점 단서는 남아 있다(사용자가 on/off 판단 요소로 허용).
+- b3는 세기·하중이 proprio에 숫자로 바로 들어가 단서가 언어(FiLM 평균)보다 직접적이다. 하중은 사용자가 on/off 판단 요소로 허용.
 - 1.5번 방안(하중·세기를 projector로 입력)도 경로만 바뀔 뿐 같은 누수가 남는다. 사용자 제안: 마그넷 세기는 작업자 결정이므로
   **출력**(action 11차원 = 마그넷 10 + 세기)으로 예측하게 하면 누수 없이 의미가 생긴다. 하중을 출력에 넣는 건 보조 과제 정도.
   교수님 원안과 달라 확인 필요, 아직 구현 안 함.
@@ -77,7 +79,7 @@ SO-101(`../so101/`)을 새 하드웨어에 붙였던 방식을 그대로 따른�
 → 영상 패치 토큰 뒤에 토큰 1개로 붙음(`prismatic/extern/hf/modeling_prismatic.py` `_process_proprio_features`).
 추론 때는 `experiments/robot/openvla_utils.py` `normalize_proprio`가 체크포인트 통계로 같은 정규화를 한다.
 
-## so101/ 대비 바꾼 코드 (두 폴더 동일)
+## so101/ 대비 바꾼 코드 (세 폴더 동일, PROPRIO_DIM·crane_utils만 다름)
 - `prismatic/vla/constants.py`: `CRANE_CONSTANTS`, `--robot_platform crane`, 이름 자동 인식(`crane`).
 - `oxe/configs.py`(인코딩 `CRANE_LOAD_POS`, `MAGNET_ONOFF_10` + 항목 `crane_b_magnet_onoff`), `oxe/transforms.py`, `oxe/mixtures.py`.
 - `oxe/materialize.py`: 인코딩 허용·마스크, 등록 안 된 `crane_*` 이름은 공용 항목 사용(`registry_name`).
@@ -152,7 +154,7 @@ $PY experiments/robot/crane/eval_server_on_rlds.py --data-root ~/datasets/rlds -
   다른 작업이 끝나기를 기다렸다가 한꺼번에 보고하지 않는다. 여러 작업이 동시에 돌면 끝난 순서대로 짧게 보고하고,
   아직 돌고 있는 작업을 함께 적는다. 대기 중이면 무엇을 기다리는지, 대략 언제 끝나는지 알린다.
 - Hawk 클러스터(SLURM, job 12시간 제한, A100 40GB)용 SO-101 스크립트는 `../so101_misc/cluster_transfer/`에 있다(자동 재제출 참고용).
-- 크레인 Hawk 학습: 각 폴더 `experiments/robot/crane/slurm_train_crane.sbatch`(사용법은 상단 주석, 두 폴더는 폴더·데이터셋·job 이름만 다름).
+- 크레인 Hawk 학습: 각 폴더 `experiments/robot/crane/slurm_train_crane.sbatch`(사용법은 상단 주석, 세 폴더는 폴더·데이터셋·job 이름만 다름).
   - 이 계정은 SO-101 문서의 `n-gpu`/`n-qos`(12시간)가 아니라 **account `m-gpu` / QoS `m-qos`**(job당 최대 36시간, GPU 최대 4장).
   - job 24시간 = job 하나의 시간일 뿐, 학습 길이가 아님. 23시간 35분에 STOP → 저장 → 자기 자신 재제출 → `--resume_from`으로
     정확히 이어감(250스텝마다 resume 상태 갱신). MAX_STEPS 도달 또는 수동 `touch <run_dir>/STOP`이면 끝. 오류 종료는 연속 2번까지만
@@ -160,7 +162,8 @@ $PY experiments/robot/crane/eval_server_on_rlds.py --data-root ~/datasets/rlds -
   - 기본값: GPU 2장, 유효 batch 8(1×2×누적 4), **25K 스텝(≈1.3 epoch), LR 5e-4 고정(감소 없음)** — 사용자 결정. `LR_DECAY=1`이면
     10K~20K에 자동 감소. 예전 120K(train_crane.sh)는 논문 스텝 수를 batch 차이 없이 가져온 값이라 버림(논문 ALOHA는 batch 32×100K,
     LIBERO는 batch 64×150K). 25K에서도 validation이 좋아지면 `<run_dir>/plan.env`의 `MAX_STEPS`만 늘려 이어서 학습.
-  - job 이름: `yhkim-crane-oft-loadpower`(b1, 예전 b1은 `yhkim-crane-oft-power`), `yhkim-crane-oft-nopower`(b2). 출력은 제출 폴더의 `slurm-<job이름>-<jobid>.out`.
+  - job 이름: `yhkim-crane-oft-loadpower`(b1), `yhkim-crane-oft-state-power`(b2, job 56610 때는 `yhkim-crane-oft-power`),
+    `yhkim-crane-oft-proprio-power`(b3). 출력은 제출 폴더의 `slurm-<job이름>-<jobid>.out`.
   - Hawk 경로: env·base 모델은 `~/yhkim/so101-openvla-oft/`(env는 transformers fork), RLDS는 `~/yhkim/datasets/rlds/`.
     스크립트는 `conda activate` 앞뒤로 `set +u`/`set -u` 필요(conda hook이 정의 안 된 변수를 읽어 job이 바로 죽음).
 - 접속 정보는 레포에 적지 않는다. Hawk 계정은 공용이므로 비밀번호·토큰을 파일이나 프롬프트에 남기지 않는다.
@@ -184,9 +187,12 @@ $PY experiments/robot/crane/eval_server_on_rlds.py --data-root ~/datasets/rlds -
 - (2026-10-29 저녁) aga01: loadpower·nopower·proprio_power 세 RLDS를 `EXCLUDED_TIDS` 적용(train 60/val 10)으로 재변환.
   제외 전 RLDS는 `~/datasets/rlds_with_bad_episodes_20261029/`. Hawk 브랜치 `crane-hawk-data-cleanup`(70446e3)은 main에 merge.
 - Hawk job 56610(2026-10-29 20:52 ~ 10-30 08:48, GPU 4장, 25K 완료): 예전 b1 `crane_b_magnet_onoff_power`(60/10).
-  사용자 계획상으로는 **b2**(언어 task + 세기, proprio 하중·x·y·z)에 해당. 체크포인트 `b1_with_power/checkpoints/crane_b_magnet_onoff_power--*`,
-  val L1 5K 0.572 / 10K 0.464 / 15K 0.486 / 20K 0.534 / 25K 0.493. 이 체크포인트의 코드는 커밋 70446e3(지금 main의 b1 코드와 다름).
+  = **b2**(언어 task + 세기, proprio 하중·x·y·z). val L1 5K 0.572 / 10K 0.464 / 15K 0.486 / 20K 0.534 / 25K 0.493.
+  2026-10-30 b2로 이름 정리: 체크포인트 `b2_state_power/checkpoints/crane_b_magnet_onoff_state_power--*`(통계 키도 새 이름),
+  Hawk RLDS `crane_b_magnet_onoff_state_power`(예전 `power`를 옮기며 지시문의 0단을 `꺼짐`으로 다시 만듦; 체크포인트는 0단 문구로
+  학습됨, 전체 0.3%), nopower RLDS 삭제. 학습 당시 코드는 커밋 70446e3의 b1_with_power(지금 b2와 0단 문구만 다름).
 - (2026-10-30) Hawk main pull 후 b3 RLDS(aga01에서 rsync, 70개) 검증 통과. b3 첫 학습(job 56643)은 0단 처리 변경으로 시작 직후 중단·삭제.
-  Hawk b3 RLDS는 proprio를 새 `proprio_vector`로 다시 계산해 tfrecord를 직접 고쳤다(영상 등 나머지 그대로). aga01 b3 RLDS는 재변환 필요.
-- 주의: Hawk의 예전 `crane_b_magnet_onoff_power`(지시문 task + 세기, proprio state 4차원)는 폐기한 b1 설계다.
-  지금 b1 = `loadpower`, Hawk에는 loadpower·proprio_power RLDS가 없어 aga01에서 전송해야 한다.
+  Hawk b3 RLDS는 proprio를 새 `proprio_vector`로 다시 계산해 tfrecord를 직접 고쳤다(영상 등 나머지 그대로).
+- (2026-10-30 ~) Hawk job 56656(hawk02, GPU 4장): b3 25K 학습 중(약 1.69초/스텝, 약 12시간).
+- aga01 할 일: b1 `loadpower`·b3 `proprio_power`는 0단 처리 변경으로 재변환, b2 `state_power`는 새로 변환(예전 `power`/`nopower` 대신).
+  Hawk에는 b1 `loadpower` RLDS가 없어 변환 후 전송해야 한다.
