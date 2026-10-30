@@ -114,8 +114,12 @@ $PY experiments/robot/crane/eval_server_on_rlds.py --data-root ~/datasets/rlds -
 - 데이터 크기: train 60 에피소드 150,330프레임, validation 10 에피소드 22,240프레임. batch 8이면 1 epoch ≈ 18.8K steps.
 - **메모리: batch 8은 약 83GB 이상 필요** (gradient checkpointing 없음, 샘플당 약 940토큰의 활성값 + 비전 인코더 역전파).
   aga01 GPU 1(96GB, 다른 사용자 13GB 사용 중)에서 batch 8은 OOM(81.8GB에서 실패, 2026-10-29). SO-101도 batch 8에 약 88GB가 필요했다.
-  → aga01은 `BATCH_SIZE=4 GRAD_ACCUM=2`(유효 8) 권장. Hawk A100 40GB: batch 2는 첫 스텝 OOM(39.5GB 꽉 참), batch 1은 정상
+  → aga01은 `BATCH_SIZE=4 GRAD_ACCUM=2`(유효 8) — 2026-10-31부터 `train_crane.sh` 기본값(25K, LR 고정도 Hawk와 같게 맞춤). Hawk A100 40GB: batch 2는 첫 스텝 OOM(39.5GB 꽉 참), batch 1은 정상
   (2026-10-29 측정). GPU 2장 × batch 1 × 누적 4 = 유효 8에서 약 3.2초/스텝 → 25K ≈ 22시간.
+  **A100 40GB × 4장(batch 1 × 누적 2 = 유효 8) 실측**(2026-10-31, b3 설정 60스텝 측정 job 56732, hawk02):
+  GPU당 VRAM `nvidia-smi` 최대 약 34.9GB / 40GB(약 85%), PyTorch 최대 할당 32.8GiB(GPU별 차이 0.1GB 미만), 1.60초/스텝
+  (약 5.0 샘플/초). 25K 실제 학습: b2 job 56610 11시간 55분(1.60초/스텝), b3 job 56656 11시간 56분(1.63초/스텝),
+  시작·validation·체크포인트 포함. b1·b2·b3는 proprio 차원(3/4/5)만 달라 메모리·속도 차이는 무시할 수준.
 - 과적합 주의: 지시문 75개가 전부 다름(강판 번호 = 사실상 에피소드 ID)이라 FiLM으로 에피소드별 타이밍을 외울 수 있다.
   체크포인트는 train L1이 아니라 validation(마그넷별 정확도, 10개 모두 맞춘 비율, on/off 시점 오차)으로 고른다.
 - 같은 GPU 종류에서 병합·평가한다(OFT 권고). 체크포인트는 병합 안 된 상태로 저장된다(`--merge_lora_during_training False`).
@@ -192,11 +196,21 @@ $PY experiments/robot/crane/eval_server_on_rlds.py --data-root ~/datasets/rlds -
   2026-10-30 b2로 이름 정리: 체크포인트 `b2_state_power/checkpoints/crane_b_magnet_onoff_state_power--*`(통계 키도 새 이름),
   Hawk RLDS `crane_b_magnet_onoff_state_power`(예전 `power`를 옮기며 지시문의 0단을 `꺼짐`으로 다시 만듦; 체크포인트는 0단 문구로
   학습됨, 전체 0.3%), nopower RLDS 삭제. 학습 당시 코드는 커밋 70446e3의 b1_with_power(지금 b2와 0단 문구만 다름).
-  0단↔꺼짐 A/B(2026-10-30, 0단 train 프레임 75개, 지시문만 바꿈): 25K 첫 스텝 비트 3.2% 바뀜(2/7 에피소드, 마그넷 1개씩,
+  0단↔꺼짐 A/B(2026-10-30, 지시문만 바꿈; train RLDS의 0단 프레임은 462개 = 0.3%로 2026-10-31 tfrecord 집계로 확인.
+  예전에 "75개"로 적혀 있었으나 근거 불명 — A/B에 쓴 표본 수였을 수 있음): 25K 첫 스텝 비트 3.2% 바뀜(2/7 에피소드, 마그넷 1개씩,
   ON→OFF·OFF→ON 같은 비율), 10K 정확도 같음. validation에는 0단이 없어 영향 없음 → 재학습 안 함, 평가는 지금 코드(`꺼짐`)로.
 - (2026-10-30) Hawk main pull 후 b3 RLDS(aga01에서 rsync, 70개) 검증 통과. b3 첫 학습(job 56643)은 0단 처리 변경으로 시작 직후 중단·삭제.
   Hawk b3 RLDS는 proprio를 새 `proprio_vector`로 다시 계산해 tfrecord를 직접 고쳤다(영상 등 나머지 그대로).
-- (2026-10-30 ~) Hawk job 56656(hawk02, GPU 4장): b3 25K 학습 중(약 1.63초/스텝, 약 11.5시간).
-  val loss 5K 0.446(curr_action_l1 0.452).
+- Hawk job 56656(2026-10-30 11:58 ~ 23:54, hawk02, GPU 4장, 25K 완료): b3 `crane_b_magnet_onoff_proprio_power`(60/10).
+  val loss 5K 0.446 / 10K 0.462 / 15K 0.391 / 20K 0.427 / 25K 0.484
+  (curr_action_l1 0.452 / 0.463 / 0.388 / 0.426 / 0.497). 체크포인트 `b3_proprio_power/checkpoints/crane_b_magnet_onoff_proprio_power--*`.
+- 이 VAL loss는 rank 0 하나가, 실행마다 무작위로 읽힌 val 에피소드 앞쪽 약 4~6개(첫 1만 프레임)만으로 낸 값이라 흔들림이 크다
+  (`finetune.py` val `take(shuffle_buffer//10).cache()`, all-reduce 없음). b2·b3 비교와 체크포인트 선택은 aga01에서
+  `eval_server_on_rlds.py`로 val 10개 전체를 돌려서 한다. 숫자만 보면 둘 다 10K~15K가 가장 낮고 이후 과적합 쪽.
+- Hawk RLDS 확인(2026-10-31, tfrecord 전체 집계): `state_power` 지시문 끝은 꺼짐/5단/3단/4단뿐이고 "0단" 0개(0단 462프레임 → 꺼짐),
+  `proprio_power` 지시문은 전부 task만, proprio 5차원 NaN 0개, 세기 값은 0/3/4/5. 둘 다 train 60/val 10, val은 5단·꺼짐만.
+- (2026-10-31) 세 폴더 `train_crane.sh`(aga01용)를 Hawk 레시피와 같게 맞춤: 유효 batch 8 = 4×누적 2, 25K, LR 5e-4 고정
+  (`LR_DECAY=1`이면 자동 감소). 예전 기본값(batch 8·120K·자동 감소)으로 돌리면 b2·b3와 비교 안 됨. b1은 aga01에서 `loadpower`를
+  0단 처리 변경 후 재변환하고 이 스크립트로 학습할 예정.
 - aga01 할 일: b1 `loadpower`·b3 `proprio_power`는 0단 처리 변경으로 재변환, b2 `state_power`는 새로 변환(예전 `power`/`nopower` 대신).
   Hawk에는 b1 `loadpower` RLDS가 없어 변환 후 전송해야 한다.

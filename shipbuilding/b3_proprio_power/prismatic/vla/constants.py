@@ -47,7 +47,7 @@ SO101_CONSTANTS = {
 CRANE_CONSTANTS = {
     "NUM_ACTIONS_CHUNK": 8,
     "ACTION_DIM": 10,
-    "PROPRIO_DIM": 5,  # b3: x, y, z, load, magnet power level (NaN -> -1); the instruction is the task only
+    "PROPRIO_DIM": 5,  # b3: x, y, z, load, magnet power level (NaN and 0단 -> 0); the instruction is the task only
     "ACTION_PROPRIO_NORMALIZATION_TYPE": NormalizationType.BOUNDS,
 }
 
