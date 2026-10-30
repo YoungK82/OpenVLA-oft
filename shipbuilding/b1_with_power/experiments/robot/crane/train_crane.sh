@@ -3,6 +3,7 @@
 #
 # Usage (run in tmux):
 #   CUDA_VISIBLE_DEVICES=0 DATA_ROOT=~/datasets/rlds BASE_MODEL=/path/to/openvla-7b bash experiments/robot/crane/train_crane.sh
+# Two GPUs: CUDA_VISIBLE_DEVICES=0,1 NPROC=2 BATCH_SIZE=4 GRAD_ACCUM=1 ... (effective batch = BATCH_SIZE x NPROC x GRAD_ACCUM).
 # Stop and resume: `touch <RUN_ROOT>/<RUN_ID>/STOP` saves the resumable state and exits; running the same command again
 # continues exactly from <RUN_ROOT>/<RUN_ID>--resume_latest (LoRA, heads, FiLM backbone, optimizer, LR schedule, step).
 # STOP_AT=HH:MM writes STOP by itself at that clock time (e.g. STOP_AT=09:50). Extra finetune.py options can follow.
@@ -20,6 +21,7 @@ RUN_ROOT="${RUN_ROOT:-$repo_dir/checkpoints}"
 RUN_ID="${RUN_ID:-$DATASET_NAME}"
 BATCH_SIZE="${BATCH_SIZE:-4}"
 GRAD_ACCUM="${GRAD_ACCUM:-2}"
+NPROC="${NPROC:-1}"  # GPUs (one process each)
 MAX_STEPS="${MAX_STEPS:-25000}"
 LR_DECAY="${LR_DECAY:-0}"  # 0 = constant LR; 1 = one automatic 10x decay
 DECAY_STEP="${DECAY_STEP:-20000}"
@@ -49,7 +51,7 @@ fi
 
 cd "$repo_dir"
 export PYTHONPATH="$repo_dir${PYTHONPATH:+:$PYTHONPATH}" WANDB_MODE="${WANDB_MODE:-offline}" WANDB_DIR="${WANDB_DIR:-$RUN_ROOT}"
-torchrun --standalone --nnodes 1 --nproc-per-node 1 vla-scripts/finetune.py \
+torchrun --standalone --nnodes 1 --nproc-per-node "$NPROC" vla-scripts/finetune.py \
   --robot_platform crane --vla_path "$BASE_MODEL" \
   --data_root_dir "$DATA_ROOT" --dataset_name "$DATASET_NAME" --run_root_dir "$RUN_ROOT" --run_id_override "$RUN_ID" \
   --use_l1_regression True --use_diffusion False \
