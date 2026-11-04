@@ -27,9 +27,9 @@ TEST_PER_DATE = {"20261012": 1, "20261013": 6, "20261014": 3}
 # Episodes left out of the RLDS dataset (bad recordings). The validation split is still drawn from all folders,
 # so the same validation TIDs come out as before these were dropped.
 EXCLUDED_TIDS = (
-    "2026101310335401",
-    "2026101315232601",
-    "2026101316261101",  # recording cut mid-episode
-    "2026101413483701",
-    "2026101416333501",
+    "2026101310335401",  # 18 s, magnets ON 7 s, load never above 0 t (no plate lifted)
+    "2026101315232601",  # 11 s (= 10 s padding + 1 s), magnets ON for 1 frame, load 0 t
+    "2026101316261101",  # 198 s, recording cut mid-episode (magnets ON in 94% of frames)
+    "2026101413483701",  # 13 s, magnets ON 2 s, load never above 0 t (no plate lifted)
+    "2026101416333501",  # 11 s (= 10 s padding + 1 s), magnets ON for 1 frame, load 0 t
 )

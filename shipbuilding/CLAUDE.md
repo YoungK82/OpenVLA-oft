@@ -10,7 +10,8 @@ SO-101(`../so101/`)을 새 하드웨어에 붙였던 방식을 그대로 따른�
   conda 환경 `openvla-oft`의 editable 설치는 `../so101/`을 가리키므로 PYTHONPATH를 꼭 지정한다.
 - transformers는 `moojink/transformers-openvla-oft` fork여야 bidirectional로 학습된다(이 서버 env는 이미 fork).
 - 데이터·RLDS·체크포인트·manifest는 커밋하지 않는다(public). push는 사용자가 토큰으로 직접 한다.
-- md 파일을 늘리지 않는다. 사용법은 스크립트 상단 주석에 둔다.
+- md 파일을 늘리지 않는다. 사용법은 스크립트 상단 주석에 둔다. 예외: `contribution.md`(다른 사람용 레포 안내, 사용자 요청
+  2026-11-04). 폴더 구성·데이터셋 이름·split·명령이 바뀌면 같이 고친다.
 
 ## 데이터 (`/home/shared/2026shipbuildingAX/Data_201012-201014/`)
 - 75개 폴더(이름=TID), 폴더마다 LeRobot v3 데이터셋 1개(에피소드 1개). 30fps, 1920×1080, 16~221초, 총 180,105프레임.
@@ -29,7 +30,14 @@ SO-101(`../so101/`)을 새 하드웨어에 붙였던 방식을 그대로 따른�
 ## 결정된 설계
 - 교수님 방안: 1) parquet 정보를 언어로 넣어 모델 변경 없이 학습(먼저 할 것) → 1.5) 강재 스펙은 언어, 로드셀은 projector →
   2) projector 여러 개. 사용자 해석으로 1번은 **state = OFT proprio 토큰(ALOHA qpos와 같은 방식), 나머지 parquet 값 = 언어**.
-- 세 변형(사용자 계획, 2026-10-30 확정). 폴더마다 `experiments/robot/crane/constants.py`·`crane_utils.py`와 학습 스크립트가 다르다:
+- **현재 설계 = `b4_state/` (2026-11-04 사용자 결정, b2 복사본).** 사용자: "마그넷 세기는 아예 제외, `observation.state`의
+  x·y·z·load는 데이터 제공 측이 묶어 둔 값이니 묶어서 진행했어야 했다."
+  - 지시문 = task만, proprio = `observation.state` 그대로 `[load, x, y, z]` 4차원(RLDS 키 `state`), 마그넷 세기는 언어·proprio·RLDS
+    어디에도 없음(`verify_rlds_dataset.py`가 확인). 데이터셋 `crane_b_magnet_onoff_state_tvt`(train 50/val 10/test 10),
+    Hawk job 이름 `yhkim-crane-oft-state`. 학습은 aga01에서 한다.
+  - 하중·위치 누수(아래 우려)는 남는다. 세기 누수만 없어진다.
+  - 아래 b1·b2·b3는 모두 마그넷 세기를 쓰므로 **이전 설계**다(코드·체크포인트·옛 RLDS는 기록으로 남김).
+- 이전 세 변형(사용자 계획, 2026-10-30 확정). 폴더마다 `experiments/robot/crane/constants.py`·`crane_utils.py`와 학습 스크립트가 다르다:
   - `b1_with_power/` (교수님 1번 방안): 지시문 = task + `. 하중 {load:.1f}t, 마그넷 세기 N단`(NaN·0단 → `꺼짐`),
     proprio = 크레인 위치 x, y, z(3차원, RLDS 키 `crane_pos`). 하중은 언어로만 들어간다. 데이터셋 `crane_b_magnet_onoff_loadpower`.
   - `b2_state_power/`: 지시문 = task + `. 마그넷 세기 N단`(NaN·0단 → `꺼짐`), proprio = state 4차원(하중, x, y, z).
@@ -46,16 +54,17 @@ SO-101(`../so101/`)을 새 하드웨어에 붙였던 방식을 그대로 따른�
   - 이전 A안(task만, proprio 없음)과 "하중·위치까지 텍스트로" 안은 폐기했다.
 - 카메라: cam1 = exo_1(CAM1), cam2 = exo(CAM2), cam3 = exo_3(CAM3) → RLDS `cam1/2/3_image` → `primary/secondary/tertiary`.
 - 256×256으로 저장(1920×1080을 눌러서 축소), 모델 입력 224.
-- `NUM_ACTIONS_CHUNK = 8`(약 0.27초), `ACTION_DIM = 10`, `PROPRIO_DIM` = b1 3 / b2 4 / b3 5, 정규화 `BOUNDS`(0/1 → -1/1, 그대로 복원).
+- `NUM_ACTIONS_CHUNK = 8`(약 0.27초), `ACTION_DIM = 10`, `PROPRIO_DIM` = b1 3 / b2·b4 4 / b3 5, 정규화 `BOUNDS`(0/1 → -1/1, 그대로 복원).
 - FiLM 사용(`--use_film True`): 지시문이 에피소드마다 다르므로. FiLM은 지시문 토큰 임베딩 평균을 쓰므로 숫자는 거의 전달 안 됨.
 - validation 10개 = 날짜별 무작위 1/6/3개(seed 7). `constants.py`의 `VALIDATION_PER_DATE`.
-- **test split 추가(2026-11-04, b1·b3):** 예전 RLDS는 train 60 / val 10뿐이라 val로 체크포인트를 고르면 남는 평가셋이 없었다.
-  새 데이터셋 `crane_b_magnet_onoff_loadpower_tvt`(b1)·`crane_b_magnet_onoff_proprio_power_tvt`(b3) = **train 50 / val 10 / test 10**.
-  val TID는 예전과 같고, test는 제외·val을 뺀 나머지에서 날짜별 1/6/3개(seed 7, `TEST_PER_DATE`)를 뽑아 b1·b3가 같다.
+- **test split 추가(2026-11-04):** 예전 RLDS는 train 60 / val 10뿐이라 val로 체크포인트를 고르면 남는 평가셋이 없었다.
+  b4 `crane_b_magnet_onoff_state_tvt` = **train 50 / val 10 / test 10**(b1·b3 `_tvt` 코드도 있으나 b4 결정으로 변환 중단·삭제).
+  val TID는 예전과 같고, test는 제외·val을 뺀 나머지에서 날짜별 1/6/3개(seed 7, `TEST_PER_DATE`)를 뽑는다.
+  test TID: 2026101216113501, 2026101308522301, 2026101308543601, 2026101313375701, 2026101313542401, 2026101314405901,
+  2026101315492201, 2026101411062701, 2026101413454901, 2026101414075001.
   test 10개는 예전 train에 있었으므로 **기존 b1·b2·b3 체크포인트는 test로 평가할 수 없다**(재학습 필요).
   train 125,570 / val 22,240 / test 24,760프레임. test는 학습·체크포인트 선택에 쓰지 않고 마지막에 `eval_server_on_rlds.py --split test`로 한 번만 본다.
   예전 RLDS(`..._loadpower`, `..._proprio_power`, 60/10)와 그 체크포인트는 그대로 둔다. 새 이름이라 체크포인트 폴더도 겹치지 않는다.
-  b2(`state_power`)는 아직 예전 60/10 그대로다.
 
 ## b1 변경 이력과 이유
 1. 처음 B안: 지시문 = task + 하중·주행·횡행·권상·마그넷 세기 전부, proprio 없음 → 사용자 결정으로 폐기.
@@ -86,7 +95,7 @@ SO-101(`../so101/`)을 새 하드웨어에 붙였던 방식을 그대로 따른�
 → 영상 패치 토큰 뒤에 토큰 1개로 붙음(`prismatic/extern/hf/modeling_prismatic.py` `_process_proprio_features`).
 추론 때는 `experiments/robot/openvla_utils.py` `normalize_proprio`가 체크포인트 통계로 같은 정규화를 한다.
 
-## so101/ 대비 바꾼 코드 (세 폴더 동일, PROPRIO_DIM·crane_utils만 다름)
+## so101/ 대비 바꾼 코드 (네 폴더 동일, PROPRIO_DIM·crane_utils·변환 필드만 다름)
 - `prismatic/vla/constants.py`: `CRANE_CONSTANTS`, `--robot_platform crane`, 이름 자동 인식(`crane`).
 - `oxe/configs.py`(인코딩 `CRANE_LOAD_POS`, `MAGNET_ONOFF_10` + 항목 `crane_b_magnet_onoff`), `oxe/transforms.py`, `oxe/mixtures.py`.
 - `oxe/materialize.py`: 인코딩 허용·마스크, 등록 안 된 `crane_*` 이름은 공용 항목 사용(`registry_name`).
@@ -238,3 +247,6 @@ $PY experiments/robot/crane/eval_server_on_rlds.py --data-root ~/datasets/rlds -
 - **aga01 b1 25K 완료**(2026-10-31 16:37, 중간에 한 번 끊겨 resume). 체크포인트 `b1_with_power/checkpoints/crane_b_magnet_onoff_loadpower--{5000,10000,...,25000}_chkpt`
   (10K 이후 2,500 간격). val loss 5K 0.505 / 10K 0.450 / 12.5K 0.346 / 15K 0.327 / 17.5K 0.317 / 20K 0.316 / 22.5K 0.320 / 25K 0.322.
   aga01 val은 배치 약 780개(Hawk 약 620)라 Hawk b2·b3 숫자와 직접 비교하지 않는다.
+- (2026-11-04) test split 문제 발견 → b1·b3 `_tvt` 변환을 시작했다가, 사용자 결정(세기 제외, state 묶음)으로 중단·삭제.
+  **b4 `crane_b_magnet_onoff_state_tvt` 전체 변환**(aga01 tmux `crane_b4_convert`, 23:15 시작, 끝나면 verify까지 자동,
+  로그 `~/datasets/rlds/logs/convert_b4_state_tvt_*.log`). 9개 에피소드 smoke(변환·verify) 통과. 다음: aga01에서 b4 학습(25K, 유효 batch 8).
