@@ -49,6 +49,13 @@ SO-101(`../so101/`)을 새 하드웨어에 붙였던 방식을 그대로 따른�
 - `NUM_ACTIONS_CHUNK = 8`(약 0.27초), `ACTION_DIM = 10`, `PROPRIO_DIM` = b1 3 / b2 4 / b3 5, 정규화 `BOUNDS`(0/1 → -1/1, 그대로 복원).
 - FiLM 사용(`--use_film True`): 지시문이 에피소드마다 다르므로. FiLM은 지시문 토큰 임베딩 평균을 쓰므로 숫자는 거의 전달 안 됨.
 - validation 10개 = 날짜별 무작위 1/6/3개(seed 7). `constants.py`의 `VALIDATION_PER_DATE`.
+- **test split 추가(2026-11-04, b1·b3):** 예전 RLDS는 train 60 / val 10뿐이라 val로 체크포인트를 고르면 남는 평가셋이 없었다.
+  새 데이터셋 `crane_b_magnet_onoff_loadpower_tvt`(b1)·`crane_b_magnet_onoff_proprio_power_tvt`(b3) = **train 50 / val 10 / test 10**.
+  val TID는 예전과 같고, test는 제외·val을 뺀 나머지에서 날짜별 1/6/3개(seed 7, `TEST_PER_DATE`)를 뽑아 b1·b3가 같다.
+  test 10개는 예전 train에 있었으므로 **기존 b1·b2·b3 체크포인트는 test로 평가할 수 없다**(재학습 필요).
+  train 125,570 / val 22,240 / test 24,760프레임. test는 학습·체크포인트 선택에 쓰지 않고 마지막에 `eval_server_on_rlds.py --split test`로 한 번만 본다.
+  예전 RLDS(`..._loadpower`, `..._proprio_power`, 60/10)와 그 체크포인트는 그대로 둔다. 새 이름이라 체크포인트 폴더도 겹치지 않는다.
+  b2(`state_power`)는 아직 예전 60/10 그대로다.
 
 ## b1 변경 이력과 이유
 1. 처음 B안: 지시문 = task + 하중·주행·횡행·권상·마그넷 세기 전부, proprio 없음 → 사용자 결정으로 폐기.

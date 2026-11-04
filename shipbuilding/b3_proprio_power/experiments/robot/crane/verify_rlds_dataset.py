@@ -36,10 +36,14 @@ def main() -> None:
     manifest = json.loads((builder_dir / "crane_conversion_manifest.json").read_text())
     lengths = {e["tid"]: e["length"] for e in manifest["episodes"]}
     expected = {"train": set(manifest["training_tids"]), "validation": set(manifest["validation_tids"])}
+    if manifest.get("test_tids"):
+        expected["test"] = set(manifest["test_tids"])
+    if set(builder.info.splits) != set(expected):
+        raise ValueError(f"RLDS splits {sorted(builder.info.splits)} != manifest splits {sorted(expected)}")
 
     image_shape = (args.image_size, args.image_size, 3)
     total_steps, on_counts, seen, power_counts = 0, np.zeros(len(MAGNET_NAMES)), set(), Counter()
-    for split in ("train", "validation"):
+    for split in expected:
         tids, dates = set(), Counter()
         for episode in builder.as_dataset(split=split, shuffle_files=False):
             tid = _text(episode["episode_metadata"]["tid"])

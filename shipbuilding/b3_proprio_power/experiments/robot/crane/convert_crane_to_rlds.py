@@ -24,6 +24,7 @@ from experiments.robot.crane.constants import (
     LANGUAGE_MODE,
     MAGNET_NAMES,
     STATE_NAMES,
+    TEST_PER_DATE,
     VALIDATION_PER_DATE,
 )
 from experiments.robot.crane.crane_utils import LANGUAGE_MODES, PROPRIO_NAMES, instruction_text, proprio_vector
@@ -96,19 +97,19 @@ def load_episode(folder: Path) -> Episode:
 def parse_per_date(text: str) -> dict[str, int]:
     """'20261012:1,20261013:6' -> {'20261012': 1, '20261013': 6}"""
     counts = {}
-    for item in text.split(","):
+    for item in filter(None, (part.strip() for part in text.split(","))):
         date, count = item.split(":")
         counts[date.strip()] = int(count)
     return counts
 
 
 def split_by_date(episodes: list[Episode], counts: dict[str, int], seed: int) -> set[str]:
-    """Pick `counts[date]` validation TIDs at random within each date; every date keeps training episodes."""
+    """Pick `counts[date]` TIDs at random within each date (validation or test); every date keeps training episodes."""
     by_date = defaultdict(list)
     for episode in episodes:
         by_date[episode.date].append(episode.tid)
     if unknown := set(counts) - set(by_date):
-        raise ValueError(f"Validation counts name dates with no episodes: {sorted(unknown)}")
+        raise ValueError(f"Split counts name dates with no episodes: {sorted(unknown)}")
     counts = {date: counts.get(date, 0) for date in by_date}
     rng = random.Random(seed)
     validation = set()
@@ -127,11 +128,19 @@ class CraneMagnetOnoff(tfds.core.GeneratorBasedBuilder):
     VERSION = tfds.core.Version("1.0.0")
 
     def __init__(
-        self, *args, episodes: list[Episode], validation_tids: set[str], image_size: int, language_mode: str, **kwargs
+        self,
+        *args,
+        episodes: list[Episode],
+        validation_tids: set[str],
+        test_tids: set[str],
+        image_size: int,
+        language_mode: str,
+        **kwargs,
     ):
         self._episodes = episodes
         self.language_mode = language_mode
         self.validation_tids = validation_tids
+        self.test_tids = test_tids
         self.image_size = image_size
         super().__init__(*args, **kwargs)
 
@@ -165,10 +174,14 @@ class CraneMagnetOnoff(tfds.core.GeneratorBasedBuilder):
 
     def _split_generators(self, dl_manager: tfds.download.DownloadManager):
         del dl_manager
-        return {
-            tfds.Split.TRAIN: self._generate_examples([e for e in self._episodes if e.tid not in self.validation_tids]),
+        held_out = self.validation_tids | self.test_tids
+        splits = {
+            tfds.Split.TRAIN: self._generate_examples([e for e in self._episodes if e.tid not in held_out]),
             tfds.Split.VALIDATION: self._generate_examples([e for e in self._episodes if e.tid in self.validation_tids]),
         }
+        if self.test_tids:  # Held out from training and checkpoint selection; finetune.py never reads it
+            splits[tfds.Split.TEST] = self._generate_examples([e for e in self._episodes if e.tid in self.test_tids])
+        return splits
 
     def _load_rows(self, episode: Episode) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         table = pq.read_table(
@@ -256,6 +269,13 @@ def parse_args() -> argparse.Namespace:
         default=VALIDATION_PER_DATE,
         help="Validation episodes per date, picked at random within the date, e.g. 20261012:1,20261013:6,20261014:3",
     )
+    parser.add_argument(
+        "--test-per-date",
+        type=parse_per_date,
+        default=TEST_PER_DATE,
+        help="Test episodes per date, drawn after validation from the remaining (non-excluded) episodes; "
+        "'' or all zeros = no test split",
+    )
     parser.add_argument("--split-seed", type=int, default=7)
     parser.add_argument("--image-size", type=int, default=256)
     return parser.parse_args()
@@ -281,11 +301,15 @@ def main() -> None:
     if validation_tids & set(EXCLUDED_TIDS):
         raise ValueError(f"Excluded TIDs drawn for validation: {sorted(validation_tids & set(EXCLUDED_TIDS))}")
     episodes = [e for e in episodes if e.tid not in EXCLUDED_TIDS]
+    # Test comes from what is left, so the validation TIDs (and old checkpoints' validation numbers) are unchanged
+    test_tids = split_by_date([e for e in episodes if e.tid not in validation_tids], args.test_per_date, args.split_seed)
+    held_out = validation_tids | test_tids
 
     builder = CraneMagnetOnoff(
         data_dir=str(args.output_root),
         episodes=episodes,
         validation_tids=validation_tids,
+        test_tids=test_tids,
         image_size=args.image_size,
         language_mode=args.language,
     )
@@ -305,9 +329,11 @@ def main() -> None:
         "language_mode": args.language,
         "split_seed": args.split_seed,
         "validation_per_date": args.validation_per_date,
+        "test_per_date": args.test_per_date,
         "excluded_tids": sorted(EXCLUDED_TIDS),
         "validation_tids": sorted(validation_tids),
-        "training_tids": sorted(e.tid for e in episodes if e.tid not in validation_tids),
+        "test_tids": sorted(test_tids),
+        "training_tids": sorted(e.tid for e in episodes if e.tid not in held_out),
         "episodes": [
             {
                 "tid": e.tid,
@@ -321,12 +347,12 @@ def main() -> None:
     }
     builder_dir = Path(builder.data_dir)
     (builder_dir / "crane_conversion_manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2))
-    per_date = defaultdict(lambda: [0, 0])
+    per_date = defaultdict(lambda: [0, 0, 0])
     for e in episodes:
-        per_date[e.date][e.tid in validation_tids] += 1
+        per_date[e.date][1 if e.tid in validation_tids else 2 if e.tid in test_tids else 0] += 1
     print(f"RLDS dataset written to: {builder_dir}")
     print(f"Splits: { {name: split.num_examples for name, split in builder.info.splits.items()} }")
-    print("Train/validation per date: " + ", ".join(f"{d} {t}/{v}" for d, (t, v) in sorted(per_date.items())))
+    print("Train/validation/test per date: " + ", ".join(f"{d} {t}/{v}/{s}" for d, (t, v, s) in sorted(per_date.items())))
 
 
 if __name__ == "__main__":

@@ -54,7 +54,7 @@ DATA_ROOT="${DATA_ROOT:-$WORK_DIR/datasets/rlds}"
 RUN_ROOT="${RUN_ROOT:-$REPO_DIR/checkpoints}"
 
 # ---- Recipe ----
-DATASET_NAME="${DATASET_NAME:-crane_b_magnet_onoff_proprio_power}"
+DATASET_NAME="${DATASET_NAME:-crane_b_magnet_onoff_proprio_power_tvt}"
 RUN_ID="${RUN_ID:-$DATASET_NAME}"
 BATCH_SIZE="${BATCH_SIZE:-1}"                # per GPU; batch 2 runs out of memory on A100 40GB (accumulation is recomputed)
 EFFECTIVE_BATCH="${EFFECTIVE_BATCH:-8}"
