@@ -228,3 +228,6 @@ $PY experiments/robot/crane/eval_server_on_rlds.py --data-root ~/datasets/rlds -
   (예정된 정지는 `touch checkpoints/crane_b_magnet_onoff_loadpower/STOP` 또는 `STOP_AT=HH:MM`으로 저장 후 종료, 강제 종료 시 최대 250스텝 손실).
   실행 명령: `cd b1_with_power && CUDA_VISIBLE_DEVICES=0,1 NPROC=2 BATCH_SIZE=2 GRAD_ACCUM=2 DATA_ROOT=~/datasets/rlds
   BASE_MODEL=~/models/openvla-7b-47a0ec7-crane-b1 bash experiments/robot/crane/train_crane.sh`(tmux 안에서).
+- **aga01 b1 25K 완료**(2026-10-31 16:37, 중간에 한 번 끊겨 resume). 체크포인트 `b1_with_power/checkpoints/crane_b_magnet_onoff_loadpower--{5000,10000,...,25000}_chkpt`
+  (10K 이후 2,500 간격). val loss 5K 0.505 / 10K 0.450 / 12.5K 0.346 / 15K 0.327 / 17.5K 0.317 / 20K 0.316 / 22.5K 0.320 / 25K 0.322.
+  aga01 val은 배치 약 780개(Hawk 약 620)라 Hawk b2·b3 숫자와 직접 비교하지 않는다.
