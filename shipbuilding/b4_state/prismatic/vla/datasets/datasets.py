@@ -7,7 +7,7 @@ format to OpenVLA, IterableDataset shim.
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Tuple, Type
+from typing import Any, Dict, Optional, Tuple, Type
 
 import numpy as np
 import torch
@@ -107,8 +107,14 @@ class RLDSDataset(IterableDataset):
         shuffle_buffer_size: int = 256_000,
         train: bool = True,
         image_aug: bool = False,
+        val_frame_stride: int = 1,
+        val_shard: Optional[Tuple[int, int]] = None,
     ) -> None:
-        """Lightweight wrapper around RLDS TFDS Pipeline for use with PyTorch/OpenVLA Data Loaders."""
+        """Lightweight wrapper around RLDS TFDS Pipeline for use with PyTorch/OpenVLA Data Loaders.
+
+        With `train=False` the dataset is one finite, fixed pass over the validation split (see
+        `make_interleaved_dataset`): every `val_frame_stride`-th frame, split across GPUs by `val_shard=(rank, world)`.
+        """
         self.data_root_dir, self.data_mix, self.batch_transform = data_root_dir, data_mix, batch_transform
 
         # Configure RLDS Dataset(s)
@@ -155,6 +161,8 @@ class RLDSDataset(IterableDataset):
             traj_transform_threads=len(mixture_spec),
             traj_read_threads=len(mixture_spec),
             train=train,
+            val_frame_stride=val_frame_stride,
+            val_shard=val_shard,
         )
 
         # If applicable, enable image augmentations

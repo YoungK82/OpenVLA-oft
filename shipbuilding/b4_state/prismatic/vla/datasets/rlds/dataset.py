@@ -479,9 +479,15 @@ def make_interleaved_dataset(
     balance_weights: bool = False,
     traj_transform_threads: Optional[int] = None,
     traj_read_threads: Optional[int] = None,
+    val_frame_stride: int = 1,
+    val_shard: Optional[Tuple[int, int]] = None,
 ) -> dl.DLataset:
     """
     Creates an interleaved dataset from list of dataset configs (kwargs). Returns a dataset of batched frames.
+
+    Validation (`train=False`) is a finite, fixed frame set read once in file order: no file or frame shuffle, no repeat,
+    no take/cache. `val_frame_stride` keeps every N-th frame of each episode (after action chunking, so chunks keep
+    their real future actions), and `val_shard=(rank, world_size)` splits those frames across GPUs without overlap.
 
     Args:
         dataset_kwargs_list: list of kwargs, each element of which is passed to `make_dataset_from_rlds`.
@@ -560,29 +566,38 @@ def make_interleaved_dataset(
         dataset, _ = make_dataset_from_rlds(
             **dataset_kwargs,
             train=train,
+            shuffle=train,  # validation reads its files in a fixed order
             num_parallel_calls=threads,
             num_parallel_reads=reads,
             dataset_statistics=all_dataset_statistics[dataset_kwargs["name"]],
         )
         dataset = apply_trajectory_transforms(
-            dataset.repeat(),
+            dataset.repeat() if train else dataset,  # validation is one finite pass
             **traj_transform_kwargs,
             num_parallel_calls=threads,
             train=train,
-        ).flatten(num_parallel_calls=threads)
+        )
+        if not train and val_frame_stride > 1:
+            # Every field of a chunked trajectory is indexed by time on axis 0
+            dataset = dataset.traj_map(lambda traj: tf.nest.map_structure(lambda x: x[::val_frame_stride], traj))
+        dataset = dataset.flatten(num_parallel_calls=threads)
         dataset = apply_per_dataset_frame_transforms(dataset, **dataset_frame_transform_kwargs)
         datasets.append(dataset)
 
-    # Interleave at the Frame Level
-    dataset: dl.DLataset = dl.DLataset.sample_from_datasets(datasets, sample_weights)
+    if train:
+        # Interleave at the Frame Level
+        dataset: dl.DLataset = dl.DLataset.sample_from_datasets(datasets, sample_weights)
 
-    # Validation =>> fix a single shuffle buffer of data and cache it in RAM; prevents gradual memory increase!
-    if not train:
-        dataset = dataset.take(shuffle_buffer_size).cache()
-
-    # Shuffle the Dataset
-    #   =>> IMPORTANT :: Shuffle AFTER .cache(), or else memory will still leak!
-    dataset = dataset.shuffle(shuffle_buffer_size)
+        # Shuffle the Dataset
+        dataset = dataset.shuffle(shuffle_buffer_size)
+    else:
+        # Validation =>> every frame of every dataset exactly once, in a fixed order, split across GPUs
+        dataset = datasets[0]
+        for other in datasets[1:]:
+            dataset = dataset.concatenate(other)
+        if val_shard is not None:
+            rank, world_size = val_shard
+            dataset = dataset.shard(world_size, rank)
 
     # Apply Frame Transforms
     overwatch.info("Applying frame transforms on dataset...")

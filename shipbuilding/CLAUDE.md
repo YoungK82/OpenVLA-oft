@@ -11,7 +11,9 @@ SO-101(`../so101/`)을 새 하드웨어에 붙였던 방식을 그대로 따른�
 - transformers는 `moojink/transformers-openvla-oft` fork여야 bidirectional로 학습된다(이 서버 env는 이미 fork).
 - 데이터·RLDS·체크포인트·manifest는 커밋하지 않는다(public). push는 사용자가 토큰으로 직접 한다.
 - md 파일을 늘리지 않는다. 사용법은 스크립트 상단 주석에 둔다. 예외: `contribution.md`(다른 사람용 레포 안내, 사용자 요청
-  2026-11-04). 폴더 구성·데이터셋 이름·split·명령이 바뀌면 같이 고친다.
+  2026-11-04), `b4-1/contribute.md`(결정적 validation과 b4 15K 붕괴 요약, 사용자 요청 2026-11-05),
+  `b4-2/contribute.md`(b4-2 최종 학습 코드의 변경점·LR 2e-4 학습 설정·결과, 사용자 요청 2026-11-06).
+  폴더 구성·데이터셋 이름·split·명령이 바뀌면 같이 고친다.
 
 ## 데이터 (`/home/shared/2026shipbuildingAX/Data_201012-201014/`)
 - 75개 폴더(이름=TID), 폴더마다 LeRobot v3 데이터셋 1개(에피소드 1개). 30fps, 1920×1080, 16~221초, 총 180,105프레임.
@@ -120,6 +122,10 @@ $PY experiments/robot/crane/eval_server_on_rlds.py --data-root ~/datasets/rlds -
 - base 모델 `/home/shared/openvla-oft/models/openvla-7b-47a0ec7`은 공유 폴더다. `finetune.py`가 `--vla_path`의 `config.json`을
   고쳐 쓰므로, 테스트 때는 safetensors만 링크하고 나머지는 복사한 사본 폴더를 `BASE_MODEL`로 쓴다.
 - 평가 지표: 마그넷별 정확도(0.5 기준), 10개 모두 맞춘 비율, on/off 바뀌는 시점 오차(프레임)와 놓친 개수.
+- 학습 없이 체크포인트 재평가(b4_state·b4-1, 병합 불필요, 체크포인트당 GPU 2장 약 9분):
+  `CUDA_VISIBLE_DEVICES=0,1 NPROC=2 DATA_ROOT=~/datasets/rlds BASE_MODEL=<학습에 쓴 base 사본> bash experiments/robot/crane/val_crane.sh <ckpt>...`
+  (`PATH`에 conda env bin 필요). 결과 `<ckpt>/val_metrics_stride3.json`, 로그 `checkpoints/<데이터셋>--val/val.log`.
+  **정확도만 보지 말고 마그넷별 ON/OFF 재현율·balanced accuracy를 본다**(항상 OFF여도 드문 마그넷 정확도는 0.89가 나옴).
 
 ## 학습이 어떻게 돌아가는가 (finetune.py, 모델 코드는 원본 그대로)
 - 한 샘플 = cam1~3 이미지(각 224, 패치 256개 → 768토큰) + 지시문(약 90토큰) + state proprio 토큰 1개 + action 자리 80토큰(8×10).
@@ -225,7 +231,8 @@ $PY experiments/robot/crane/eval_server_on_rlds.py --data-root ~/datasets/rlds -
 - Hawk job 56656(2026-10-30 11:58 ~ 23:54, hawk02, GPU 4장, 25K 완료): b3 `crane_b_magnet_onoff_proprio_power`(60/10).
   val loss 5K 0.446 / 10K 0.462 / 15K 0.391 / 20K 0.427 / 25K 0.484
   (curr_action_l1 0.452 / 0.463 / 0.388 / 0.426 / 0.497). 체크포인트 `b3_proprio_power/checkpoints/crane_b_magnet_onoff_proprio_power--*`.
-- 이 VAL loss는 rank 0 하나가, 실행마다 무작위로 읽힌 val 에피소드 앞쪽 약 4~6개(첫 1만 프레임)만으로 낸 값이라 흔들림이 크다
+- (이 항목은 2026-11-05 이전 validation 기준. b4_state·b4-1은 아래 "결정적 validation"으로 바뀜.)
+  이 VAL loss는 rank 0 하나가, 실행마다 무작위로 읽힌 val 에피소드 앞쪽 약 4~6개(첫 1만 프레임)만으로 낸 값이라 흔들림이 크다
   (`finetune.py` val `take(shuffle_buffer//10).cache()`, all-reduce 없음). b2·b3 비교와 체크포인트 선택은 aga01에서
   `eval_server_on_rlds.py`로 val 10개 전체를 돌려서 한다. 숫자만 보면 둘 다 10K~15K가 가장 낮고 이후 과적합 쪽.
 - Hawk RLDS 확인(2026-10-31, tfrecord 전체 집계): `state_power` 지시문 끝은 꺼짐/5단/3단/4단뿐이고 "0단" 0개(0단 462프레임 → 꺼짐),
@@ -250,3 +257,99 @@ $PY experiments/robot/crane/eval_server_on_rlds.py --data-root ~/datasets/rlds -
 - (2026-11-04) test split 문제 발견 → b1·b3 `_tvt` 변환을 시작했다가, 사용자 결정(세기 제외, state 묶음)으로 중단·삭제.
   **b4 `crane_b_magnet_onoff_state_tvt` 전체 변환**(aga01 tmux `crane_b4_convert`, 23:15 시작, 끝나면 verify까지 자동,
   로그 `~/datasets/rlds/logs/convert_b4_state_tvt_*.log`). 9개 에피소드 smoke(변환·verify) 통과. 다음: aga01에서 b4 학습(25K, 유효 batch 8).
+- (2026-11-04 23:41) 감시 스크립트 `~/crane_jobs/b4_convert_then_train.sh`(레포 밖, tmux `crane_b4_train`, 로그 `~/crane_jobs/b4_convert_then_train.log`):
+  변환·verify 통과(train 50/val 10/test 10) 확인 → GPU 여유 메모리 확인(두 장 다 60GB↑면 GPU 0,1 batch 2×누적 2,
+  아니면 한 장 78GB↑면 그 GPU batch 4×누적 2, 둘 다 아니면 학습 안 함) → b4 학습 자동 시작(25K, 유효 8, LR 고정).
+  base 모델 사본 `~/models/openvla-7b-47a0ec7-crane-b4/`. 학습이 끊기면 `b4_state/`에서 같은 `train_crane.sh` 명령(로그에 GPU·batch 기록됨)을 다시 실행해 이어간다.
+  학습 중에는 감시 스크립트를 다시 돌리지 않는다(학습이 두 개 뜬다).
+- **b4 학습 결과와 중단**(2026-11-05): 00:48 시작(GPU 0·1, batch 2×2장×누적 2 = 유효 8, LR 5e-4 고정) →
+  11:23 사용자 요청으로 `STOP`(15,543스텝). **14K 부근에서 붕괴**: train L1(500스텝 블록) 13.5K까지 약 0.29 → 14K 0.40 → 14.5K~15.5K
+  0.46(상수 예측 수준)에서 회복 못 함(6K 0.37, 8.5K 0.40에서도 일시적으로 튀었다 돌아옴). `--resume_latest`(15,543)는 붕괴 이후라 **이어서 학습하지 않는다.**
+  같은 레시피의 b1은 14.5K에 0.33으로 살짝 튀고 회복, 25K까지 붕괴 없음 → L1/OFT 레시피라서 반드시 붕괴하는 건 아님.
+  추정 원인(gradient 로그 없음, 미확인): batch 8에 논문(batch 32~64)과 같은 LR 5e-4, 0/1 목표에서 L1의 최적해가 마그넷별 다수값 상수(중앙값)라
+  빠지면 못 나옴, b4는 세기 단서가 없어 입력 신호가 약함.
+- **결정적 validation (2026-11-05, `b4_state/`에 적용 후 `b4-1/`로 복사).** 기존 val의 문제: val에도 `.repeat()`, `take(10000).cache()`로
+  스트림 앞 1만 프레임만 후보, 프레임·파일 순서 셔플, 180초 컷(실제 약 750~1,000프레임 = 약 4%, 셔플 버퍼 채우는 시간도 포함),
+  GPU 2장이 같은 val을 따로 돌리고 rank 0만 출력, 배치 평균의 평균. cache는 TF 2.15로 직접 확인: 끝까지 안 읽으면 버려지지만
+  `take(N).cache().shuffle(N)`은 셔플 버퍼가 N개를 다 읽어 첫 val에서 완성 → 후보 풀은 한 학습 안에서 고정, 잡음 원인은 셔플 + 180초 컷.
+  바꾼 것:
+  - `prismatic/vla/datasets/rlds/dataset.py` `make_interleaved_dataset`: `val_frame_stride`, `val_shard=(rank, world)` 추가. val은
+    `from_rlds(shuffle=False)`, `.repeat()`·`take().cache()`·`shuffle()` 없음, 청킹 뒤 에피소드마다 N프레임 간격, 데이터셋은 순서대로 이어 붙임,
+    `dataset.shard`로 GPU별 분할. train 경로는 그대로.
+  - `prismatic/vla/datasets/datasets.py` `RLDSDataset`: 위 두 인자 전달.
+  - `vla-scripts/finetune.py`: `val_time_limit` 삭제, `--val_frame_stride 3`(기본), `--val_batch_size`, `--val_only`(`--resume_from` 체크포인트로
+    val 1회 후 `<ckpt>/val_metrics_stride<N>.json` 쓰고 종료, 학습 dataloader 안 만듦). `run_forward_pass(return_onoff_counts=True)`가
+    현재 액션을 0 기준으로 잘라 마그넷별 TP/FN/TN/FP를 셈. `run_validation`은 끝까지 돌고 프레임 가중 합계를 `all_reduce`, VAL 줄에
+    frames·loss·curr/next L1·onoff_acc·mean_balanced_acc, 다음 줄에 ON_recall·OFF_recall·ON_frames 출력. 재현율은 모니터링 전용(loss·저장·LR에 안 씀).
+  - `experiments/robot/crane/val_crane.sh`(새 파일): 체크포인트 재평가. 학습 run 폴더·`resume_latest`를 건드리지 않음(`--run_id_override <데이터셋>--val`).
+  - 평가 대상 7,390프레임 = val 22,240에서 청킹이 에피소드마다 끝 7프레임을 빼 22,170, 그중 3프레임 간격. 검증: 두 번 돌려 프레임·순서 동일,
+    GPU 두 샤드(3,695 + 3,695) 합 = 전체, 15K 두 번 평가 값 동일(소수 넷째 자리).
+- **b4 재평가 결과**(2026-11-05, 위 validation, GPU 0·1):
+
+  | | 5K | 10K | 15K |
+  |---|---|---|---|
+  | L1 / curr L1 | **0.405** / 0.402 | 0.427 / 0.427 | 0.585 / 0.585 |
+  | on/off 정확도 | **0.812** | 0.797 | 0.708 (= 다수값 baseline) |
+  | balanced accuracy | **0.699** | 0.691 | 0.500 |
+
+  마그넷별 ON / OFF 재현율(정답 ON 프레임 779/3008/4187/5941/6322/6322/5370/4357/2206/790):
+  5K `0/1, .06/.94, 1/.30, .97/.85, 1/.91, 1/.91, 1/.48, .86/.41, .75/.53, 0/1`;
+  10K `0/1, 0/1, .96/.30, .97/.67, .97/.91, .97/.91, 1/.57, 1/.38, 1/.22, 0/1`;
+  15K는 1·2·10 항상 OFF, 3~9 항상 ON(마그넷별 ON 비율 50% 기준 다수값 상수).
+  - **두 문제는 별개(사용자 정리):** ① 드문 마그넷 무시는 처음부터(1·10은 5K·10K에서도 한 번도 안 켬, 2는 5K 6%·10K 0%)
+    → ON 가중치 또는 L1 대신 마그넷별 BCE(`pos_weight`). ② 14K 붕괴 → LR 낮추기(batch 8 기준 1e-4~2.5e-4 검토) 또는 이른 감소(`LR_DECAY=1`).
+    재학습 설정은 아직 결정 안 함. 학습 중 val의 balanced accuracy가 0.5로 떨어지면 붕괴 신호.
+  - 현재 후보 체크포인트는 5K. 최종 선택은 `eval_server_on_rlds.py` 시점 오차까지 보고 정한다.
+- **`b4-1/` 폴더**(2026-11-05 사용자 요청): `b4_state/` 코드 사본(위 validation 수정 포함, 체크포인트·`__pycache__` 제외, 복사 시점에 b4_state와 동일)
+  + `contribute.md`(validation 변경 이유·내용, 재평가 결과, 15K 붕괴 분석). 체크포인트는 `b4_state/checkpoints/`에만 있다(35GB).
+  `b4_state/`도 같은 validation 수정이 들어간 상태다(수정 전 코드로 되돌릴지는 미정). 둘 다 아직 커밋 안 함.
+- **LR 실험(2026-11-05 저녁, `b4-1/`, 감시·실행 스크립트는 레포 밖 `~/crane_jobs/`)**: b4 10K 체크포인트에서 이어 학습.
+  - A `crane_b_magnet_onoff_state_tvt--from10k_lr5e-5`: LR 5e-5(10배 감소, `LR_DECAY=1 DECAY_STEP=10000`)로 10K→15K, val·체크포인트 500마다
+    (tmux `crane_b4_lr_ab`, 체크포인트 `b4-1/checkpoints/`). 10.5K~12K val: on/off 판정이 10K와 7,390프레임 전부 같고 L1만 0.427→0.407
+    → 5e-5는 붕괴 없이 유지만 하고 새로 배우지 못함. 21시부터 다른 사용자(mskim·sgahn)가 같은 GPU를 써서 2.1→4.5초/스텝.
+  - B(5e-4 대조)는 **사용자 결정으로 취소**: 원래 b4가 같은 10K 상태·같은 LR로 15K까지 간 기록이라 데이터 순서만 다른 반복이고,
+    결과가 어느 쪽이든 다음 결정(LR 낮추기)이 같음. A/B 실행 스크립트만 kill하고 A는 그대로 진행.
+- **action head는 GPU 간에 동기화되지 않는다(원본 OFT 코드, 2026-11-05 확인).** `run_forward_pass`가 `action_head.module.predict_action`으로
+  호출해 DDP forward를 건너뛰므로 head gradient는 all-reduce되지 않는다(torch 2.11, CPU gloo 2프로세스로 재현: DDP로 부른 부분은
+  GPU 간 gradient 동일, head는 다름). GPU마다 자기 데이터로 head를 따로 학습하고 **rank 0의 head만 저장**된다(2장이면 데이터 절반, 4장이면 1/4).
+  LoRA·FiLM·proprio projector는 정상 동기화. b1~b4·A 모두 해당. 학습 중 validation은 GPU마다 자기 head로 샤드를 채점하므로
+  저장 모델과 다른 혼합값이다(`val_crane.sh` 재평가는 rank 0 head로 양쪽을 채점해 저장 모델 기준). 학습 중 train loss 로그(W&B·TRAIN 줄)도
+  rank 0 값만이었다(W&B 점 = rank 0의 마지막 스텝, 샘플 4개).
+- **`b4-2/` 폴더(2026-11-05, b4-1 코드 사본 + 아래 수정, LR 2e-4 처음부터 학습용)**. 사용자 결정: LR 2e-4, clipping 없음(기능 자체 제거),
+  head 학습은 원본 그대로(LR만 바꾼 비교), validation은 rank 0 head로, val balanced accuracy 정체 시 10배 감소.
+  - `finetune.py`: train 지표를 GPU 전체·샘플 기준으로 all-reduce(W&B 점은 10스텝, TRAIN 줄은 500스텝 평균, `samples=` 표시);
+    gradient norm을 본체(LoRA·FiLM·proprio, GPU 간 동일)와 head(rank 0)로 나눠 기록(`grad_body_*`, `grad_head0_*`);
+    `rank0_action_head`: validation 동안 rank 0 head를 모든 GPU에 빌려주고 끝나면 원래 head로 복원(학습 불변, VAL = 저장 모델);
+    validation과 LR 감소 판단을 체크포인트·resume 저장 **앞**으로 이동; `--val_plateau_decay`(patience 3, min_delta 0.005, 5K 이후부터
+    정체 횟수를 셈 → 가장 이른 감소 7K); training_state에 GPU 수 저장, 재시작 때 유효 batch가 다르면 에러; `--resume_from` 직후 스텝도 저장.
+  - `train_crane.sh`: `LEARNING_RATE`, `VAL_DECAY*`, `VAL_FREQ`, `VAL_BATCH_SIZE` 환경변수. 첫 실행 때 `<run>/plan.env`에 설정(LR·감소·val·저장·
+    MAX_STEPS·BATCH_SIZE/GRAD_ACCUM/NPROC)을 기록하고, 같은 RUN_ID 재실행 때 환경에 없는 값은 plan.env에서 읽음.
+  - 검증: CPU 단위 테스트(gradient norm 분할, LR 감소 규칙), gloo 2프로세스(rank 0 head 빌려주기·복원·예외 시 복원), 가짜 torchrun으로
+    인자·plan.env 확인, 전체 인자 draccus 파싱. 다관점 검토 워크플로 2회(첫 회에 clipping이 head 때문에 GPU별 계수가 달라져 LoRA까지
+    갈라지는 문제 발견 → clipping 제거).
+  - `--reset_lr_schedule True`(b4-2): `--resume_from` 때 체크포인트의 LR 감소 기록·plateau 기록을 무시하고 `--learning_rate`로 이어감.
+    A의 체크포인트는 `lr_decayed=True`라 이것 없이 이으면 LR = 0.1 × `--learning_rate`가 된다(12K 상태로 확인: 1e-4 → 1e-5).
+  - 실행(2026-11-05 23:02 사용자 변경: A는 12.5K에서 STOP, 2e-4는 25K가 아니라 15K까지): `~/crane_jobs/b4_lr_queue.sh`(tmux `crane_b4_lr_queue`,
+    로그 `~/crane_jobs/b4_lr_queue.log`)가 A 종료 → 두 GPU 60GB 이상 여유 확인 →
+    ① A' `crane_b_magnet_onoff_state_tvt--from12k_lr1e-4`: A의 12K 체크포인트(`b4-1/checkpoints/...from10k_lr5e-5--12000_chkpt`)에서
+    LR 1e-4 고정으로 15K까지(`--reset_lr_schedule True`, 시작 LR이 0.0001이 아니면 자동 STOP), val·체크포인트 500마다 →
+    ② `crane_b_magnet_onoff_state_tvt--lr2e-4`: 처음부터 LR 2e-4, 15K, val·체크포인트 1000마다, val 정체 시 10배 감소.
+    둘 다 b4-2 코드, GPU 0,1, batch 2×2×누적 2. 끊기면 대기열 스크립트를 다시 실행(15000 체크포인트가 있는 run은 건너뛰고, 중단된 run은
+    plan.env와 resume_latest로 이어감). 예전 감시 스크립트 `b4_2_lr2e-4_after_ab.sh`는 이 대기열로 대체(종료함).
+  - 다음 실험 후보: head gradient 동기화(정상 data-parallel), 드문 마그넷용 BCE/`pos_weight`.
+- **LR 실험 결과(2026-11-06)**: A'(1e-4, 12K→15K)도 판정 변화 없음(balanced 0.691 고정). B `crane_b_magnet_onoff_state_tvt--lr2e-4`
+  (처음부터 LR 2e-4): 붕괴 없음, validation 최고 3K(balanced 0.740, 정확도 0.833; 원래 b4 최고 5K 0.699), 5~7K 정체로 7K에 2e-5 자동 감소,
+  이후 train L1 0.12→0.04인데 val은 그대로(과적합) → 사용자 판단으로 14,087에서 STOP. 중간에 사용자 요청으로 GPU·batch를 바꿔 이어감
+  (11,354 GPU 1장 batch 4×누적 2 → 11,605 GPU 2장 2×2 → 11,630 GPU 2장 batch 4×누적 1, 유효 8 유지; 2장 4×1이 1.34초/스텝으로 가장 빠름,
+  GPU 0 사용량 약 86GB(mskim 8GB 포함)). 마그넷 2는 처음으로 켬(ON 0.6~0.8), 1·10은 val에서 0, 3은 OFF 재현율 약 0.31 고정.
+- **test 평가(2026-11-06, `val_crane.sh EVAL_SPLIT=test`)**: 3K 정확도 0.891 / balanced 0.813, 14K 0.902 / 0.824(다수값 기준 0.791).
+  validation은 3K, test는 14K가 조금 나아 순위가 반대 → 에피소드 10개라 순위가 불안정. test로 고르지 않는다. 3K validation 재평가는
+  학습 중 기록과 소수 넷째 자리까지 같음(rank 0 head 평가 확인).
+- **b4-2 평가·기록 추가(학습 계산 불변)**: `--eval_split`(val_only 전용), `upload_eval_to_wandb.py`(+ `val_crane.sh`의 `WANDB_SYNC_ENTITY`
+  자동 업로드, 결과 옆 `.wandb` 표시 파일로 중복 방지). W&B: offline run을 `~/wandb-cli`로 sync, B의 재시작 조각 4개는 `--id ixka58xk`로 한 run에
+  합침, run별 그룹·태그(`b4-original-lr5e-4`, `b4-1-lr-test`, `b4-2-lr2e-4`). 3K test 점은 첫 업로드 때 중복으로 한 번 더 들어갔다(같은 값).
+- **state = ERP 기록 확인(2026-11-06)**: 제공 측 PDF("U 이전은 0, U부터 최근 이벤트 행의 CRNWGT 홀드", crane_pos 홀드)와 75개 전부에서
+  state가 ERP 이벤트 프레임에서만 바뀜(에피소드당 2~30번). U 이전 0은 규칙으로 채운 값(기본 하중 없음), D에서 하중 0(66/75) → 순중량으로 추정.
+  U는 첫 ON보다 중간값 6프레임 앞. 마그넷 세기는 DATA csv(다른 출처).
+- **b4-2를 최종 학습 코드로 고정(2026-11-06 사용자 결정)**. 학습 코드를 바꾸는 다음 실험은 `b4-3/`에서 한다.
+

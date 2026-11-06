@@ -12,7 +12,7 @@ import time
 from collections import Counter, deque
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Optional, Tuple, Type
+from typing import Any, Dict, Optional, Tuple, Type
 
 import draccus
 import numpy as np
@@ -100,7 +100,11 @@ class FinetuneConfig:
     max_steps: int = 200_000                         # Max number of training steps
     use_val_set: bool = False                        # If True, uses validation set and log validation metrics
     val_freq: int = 10_000                           # (When `use_val_set==True`) Validation set logging frequency in steps
-    val_time_limit: int = 180                        # (When `use_val_set==True`) Time limit for computing validation metrics
+    val_frame_stride: int = 3                        # (When `use_val_set==True`) Score every N-th frame of every validation
+                                                     #   episode, all of them, in a fixed order (no time limit, no shuffle)
+    val_batch_size: Optional[int] = None             # Validation batch size per GPU (None = --batch_size)
+    val_only: bool = False                           # Load --resume_from, run validation once, write
+                                                     #   <resume_from>/val_metrics_stride<N>.json and exit (no training)
     save_freq: int = 10_000                          # Checkpoint saving frequency in steps
     save_latest_checkpoint_only: bool = False        # If True, saves only 1 checkpoint, overwriting latest checkpoint
                                                      #   (If False, saves all checkpoints)
@@ -177,6 +181,10 @@ def validate_finetune_config(cfg: FinetuneConfig) -> None:
             raise ValueError(f"{cfg.resume_from} has no training_state.pt; it was not saved with resume support.")
         if cfg.lr_warmup_steps > 0:
             raise ValueError("--lr_warmup_steps would restart the warmup after resuming; set it to 0 with --resume_from.")
+    if cfg.val_only and (cfg.resume_from is None or not cfg.use_val_set):
+        raise ValueError("--val_only needs --resume_from <checkpoint dir> and --use_val_set True.")
+    if cfg.val_frame_stride < 1:
+        raise ValueError("--val_frame_stride must be >= 1.")
     if (cfg.auto_lr_decay or cfg.stop_l1_threshold > 0) and cfg.lr_warmup_steps > 0:
         raise ValueError("--auto_lr_decay/--stop_l1_threshold set the LR themselves; use --lr_warmup_steps 0.")
 
@@ -389,6 +397,7 @@ def run_forward_pass(
     num_patches,
     compute_diffusion_l1=False,
     num_diffusion_steps_train=None,
+    return_onoff_counts=False,
 ) -> Tuple[torch.Tensor, Dict[str, float]]:
     """
     Compute model forward pass and metrics for both training and validation.
@@ -409,6 +418,9 @@ def run_forward_pass(
         compute_diffusion_l1 (bool): Whether to sample actions and compute L1 loss for diffusion (do this once every
                                     diffusion_sample_freq steps during training; do it every batch for validation)
         num_diffusion_steps_train (int): Number of diffusion steps for training (only used for diffusion).
+        return_onoff_counts (bool): Also return `metrics["onoff_counts"]`, a (4, ACTION_DIM) tensor of per-dimension
+                                    [TP, FN, TN, FP] counts for the current action, thresholded at 0 in normalized space
+                                    (crane magnets: 0/1 commands are normalized to -1/+1). Validation only.
 
     Returns:
         tuple: (loss, metrics_dict)
@@ -544,6 +556,17 @@ def run_forward_pass(
                     "next_actions_l1_loss": next_actions_l1_loss.item(),
                 }
             )
+            if return_onoff_counts:
+                true_on = ground_truth_curr_action > 0
+                pred_on = predicted_curr_action > 0
+                metrics["onoff_counts"] = torch.stack(
+                    [
+                        (true_on & pred_on).sum(dim=0),
+                        (true_on & ~pred_on).sum(dim=0),
+                        (~true_on & ~pred_on).sum(dim=0),
+                        (~true_on & pred_on).sum(dim=0),
+                    ]
+                ).double()
 
     # Return both the loss tensor (with gradients) and the metrics dictionary (with detached values)
     return loss, metrics
@@ -849,34 +872,35 @@ def run_validation(
     num_patches,
     log_step,
     distributed_state,
-    val_time_limit,
-) -> None:
+) -> Dict[str, Any]:
     """
-    Compute validation set metrics for logging.
+    Compute validation metrics over the whole fixed validation frame set (no time limit, no shuffle).
+
+    Each GPU scores its own shard of the frames (see `RLDSDataset(val_shard=...)`); per-frame sums are all-reduced, so
+    every reported number is a mean over all validation frames, identical on every rank and comparable across steps.
+    On/off recalls are for monitoring only (nothing in training reads them).
 
     Args:
         vla (OpenVLAForActionPrediction): Vision-language-action policy.
         action_head (nn.Module): Action head module.
         noisy_action_projector (nn.Module): Noisy action projector module (only used for diffusion).
         proprio_projector (nn.Module): Proprioceptive state projector module.
-        val_dataloader (DataLoader): Validation data loader.
+        val_dataloader (DataLoader): Validation data loader (finite).
         action_tokenizer (ActionTokenizer): Action tokenizer.
         device_id (str): Device ID.
         cfg (FinetuneConfig): Training configuration.
         num_patches (int): Number of vision patches.
         log_step (int): Current logging step.
         distributed_state (PartialState): Distributed training state.
-        val_time_limit (int): Time limit for computing validation metrics.
 
     Returns:
-        None.
+        dict: Frame-weighted validation metrics (same on every rank).
     """
     val_start_time = time.time()
     vla.eval()
-    val_batches_count = 0
-
-    # List to store validation metrics
-    all_val_metrics = []
+    mean_names = ("loss_value", "curr_action_l1_loss", "next_actions_l1_loss")
+    sums = torch.zeros(len(mean_names) + 1, dtype=torch.float64, device=device_id)  # metric sums, then frame count
+    onoff_counts = torch.zeros(4, ACTION_DIM, dtype=torch.float64, device=device_id)  # TP, FN, TN, FP per dimension
 
     with torch.no_grad():
         for batch in val_dataloader:
@@ -896,35 +920,61 @@ def run_validation(
                 num_patches=num_patches,
                 compute_diffusion_l1=True,
                 num_diffusion_steps_train=cfg.num_diffusion_steps_train if cfg.use_diffusion else None,
+                return_onoff_counts=True,
             )
+            # Batch means -> per-frame sums (every frame has the same number of action values)
+            n = batch["actions"].shape[0]
+            for i, name in enumerate(mean_names):
+                sums[i] += metrics[name] * n
+            sums[-1] += n
+            onoff_counts += metrics["onoff_counts"]
 
-            # Add the loss value to the metrics
-            metrics["loss"] = metrics["loss_value"]
-            all_val_metrics.append(metrics)
-            val_batches_count += 1
+    # Sum over GPUs (each scored a disjoint shard)
+    dist.all_reduce(sums)
+    dist.all_reduce(onoff_counts)
+    num_frames = int(sums[-1].item())
+    if num_frames == 0:
+        raise RuntimeError("Validation produced no frames; check the validation split and --val_frame_stride.")
 
-            # Cut testing on validation set short if it exceeds time limit
-            if time.time() - val_start_time > val_time_limit:
-                break
+    tp, fn, tn, fp = onoff_counts.cpu().numpy()
+    with np.errstate(divide="ignore", invalid="ignore"):
+        on_recall = tp / (tp + fn)  # NaN when a dimension is never ON in the validation frames
+        off_recall = tn / (tn + fp)
+    balanced = (on_recall + off_recall) / 2
+    val_metrics = {name: (sums[i] / num_frames).item() for i, name in enumerate(mean_names)}
+    val_metrics.update(
+        {
+            "frames": num_frames,
+            "onoff_accuracy": float((tp + tn).sum() / onoff_counts.sum().item()),
+            "mean_balanced_accuracy": float(np.nanmean(balanced)),
+            "on_recall": on_recall.tolist(),
+            "off_recall": off_recall.tolist(),
+            "on_frames": (tp + fn).astype(int).tolist(),
+            "seconds": round(time.time() - val_start_time, 1),
+        }
+    )
 
-    # Compute average validation metrics
-    avg_val_metrics = {}
-    for metric_name in all_val_metrics[0].keys():
-        values = [metrics[metric_name] for metrics in all_val_metrics if metric_name in metrics]
-        if values:
-            avg_val_metrics[metric_name] = sum(values) / len(values)
-
-    # Add batch count to metrics
-    avg_val_metrics["val_batches_count"] = val_batches_count
-
-    # Log validation metrics to W&B
     if distributed_state.is_main_process:
-        log_metrics_to_wandb(avg_val_metrics, "VLA Val", log_step, wandb)
+        scalar_metrics = {k: v for k, v in val_metrics.items() if not isinstance(v, list)}
+        scalar_metrics.update({f"on_recall_{i + 1}": v for i, v in enumerate(on_recall.tolist())})
+        scalar_metrics.update({f"off_recall_{i + 1}": v for i, v in enumerate(off_recall.tolist())})
+        log_metrics_to_wandb(scalar_metrics, "VLA Val", log_step, wandb)
+
+        def fmt(values):
+            return "[" + ", ".join("nan" if np.isnan(v) else f"{v:.3f}" for v in values) + "]"
+
         print(
-            f"VAL step={log_step} loss={avg_val_metrics['loss_value']:.4f} "
-            f"curr_action_l1={avg_val_metrics['curr_action_l1_loss']:.4f} batches={val_batches_count}",
+            f"VAL step={log_step} frames={num_frames} stride={cfg.val_frame_stride} "
+            f"loss={val_metrics['loss_value']:.4f} curr_action_l1={val_metrics['curr_action_l1_loss']:.4f} "
+            f"next_actions_l1={val_metrics['next_actions_l1_loss']:.4f} "
+            f"onoff_acc={val_metrics['onoff_accuracy']:.4f} mean_balanced_acc={val_metrics['mean_balanced_accuracy']:.4f} "
+            f"({val_metrics['seconds']:.0f}s)\n"
+            f"VAL step={log_step} ON_recall={fmt(on_recall)}\n"
+            f"VAL step={log_step} OFF_recall={fmt(off_recall)}\n"
+            f"VAL step={log_step} ON_frames={val_metrics['on_frames']}",
             flush=True,
         )
+    return val_metrics
 
 
 @draccus.wrap()
@@ -1198,9 +1248,11 @@ def finetune(cfg: FinetuneConfig) -> None:
             cfg.dataset_name,
             batch_transform,
             resize_resolution=tuple(vla.module.config.image_sizes),
-            shuffle_buffer_size=cfg.shuffle_buffer_size // 10,
-            image_aug=cfg.image_aug,
+            shuffle_buffer_size=cfg.shuffle_buffer_size // 10,  # unused for validation (no shuffle)
+            image_aug=cfg.image_aug,  # unused for validation (augmentation is train-only)
             train=False,
+            val_frame_stride=cfg.val_frame_stride,
+            val_shard=(distributed_state.process_index, distributed_state.num_processes),
         )
 
     # [Important] Save dataset statistics so that we can unnormalize actions during inference
@@ -1211,23 +1263,24 @@ def finetune(cfg: FinetuneConfig) -> None:
     collator = PaddedCollatorForActionPrediction(
         processor.tokenizer.model_max_length, processor.tokenizer.pad_token_id, padding_side="right"
     )
-    dataloader = DataLoader(
-        train_dataset,
-        batch_size=cfg.batch_size,
-        sampler=None,
-        collate_fn=collator,
-        num_workers=0,  # Important: Set to 0 if using RLDS, which uses its own parallelism
-    )
-    validate_training_batch(next(iter(dataloader)), cfg)
-    if distributed_state.is_main_process:
-        print(
-            "Validated first training batch:\n"
-            f"\tactions: (*, {NUM_ACTIONS_CHUNK}, {ACTION_DIM})\n"
-            f"\timages: {cfg.num_images_in_input}\n"
-            f"\tproprio dim: {PROPRIO_DIM if cfg.use_proprio else 'disabled'}"
+    if not cfg.val_only:  # the train iterator fills a large shuffle buffer; validation-only runs never need it
+        dataloader = DataLoader(
+            train_dataset,
+            batch_size=cfg.batch_size,
+            sampler=None,
+            collate_fn=collator,
+            num_workers=0,  # Important: Set to 0 if using RLDS, which uses its own parallelism
         )
+        validate_training_batch(next(iter(dataloader)), cfg)
+        if distributed_state.is_main_process:
+            print(
+                "Validated first training batch:\n"
+                f"\tactions: (*, {NUM_ACTIONS_CHUNK}, {ACTION_DIM})\n"
+                f"\timages: {cfg.num_images_in_input}\n"
+                f"\tproprio dim: {PROPRIO_DIM if cfg.use_proprio else 'disabled'}"
+            )
     if cfg.use_val_set:
-        val_batch_size = cfg.batch_size
+        val_batch_size = cfg.val_batch_size or cfg.batch_size
         val_dataloader = DataLoader(
             val_dataset,
             batch_size=val_batch_size,
@@ -1235,6 +1288,37 @@ def finetune(cfg: FinetuneConfig) -> None:
             collate_fn=collator,
             num_workers=0,  # Important: Set to 0 if using RLDS, which uses its own parallelism
         )
+
+    if cfg.val_only:
+        validate_training_batch(next(iter(val_dataloader)), cfg)
+        val_metrics = run_validation(
+            vla=vla,
+            action_head=action_head,
+            noisy_action_projector=noisy_action_projector if cfg.use_diffusion else None,
+            proprio_projector=proprio_projector if cfg.use_proprio else None,
+            val_dataloader=val_dataloader,
+            action_tokenizer=action_tokenizer,
+            device_id=device_id,
+            cfg=cfg,
+            num_patches=NUM_PATCHES,
+            log_step=start_state["log_step"],
+            distributed_state=distributed_state,
+        )
+        if distributed_state.is_main_process:
+            out_path = Path(cfg.resume_from) / f"val_metrics_stride{cfg.val_frame_stride}.json"
+            record = {
+                "checkpoint": str(Path(cfg.resume_from).resolve()),
+                "step": start_state["log_step"],
+                "dataset_name": cfg.dataset_name,
+                "val_frame_stride": cfg.val_frame_stride,
+                "num_gpus": distributed_state.num_processes,
+                "val_batch_size": val_batch_size,
+                **val_metrics,
+            }
+            out_path.write_text(json.dumps(record, indent=2) + "\n")
+            print(f"Wrote {out_path}", flush=True)
+        dist.barrier()
+        return
 
     # Deque to store recent train metrics (used for computing smoothened metrics for gradient accumulation)
     recent_metrics = {
@@ -1438,7 +1522,6 @@ def finetune(cfg: FinetuneConfig) -> None:
                     num_patches=NUM_PATCHES,
                     log_step=log_step,
                     distributed_state=distributed_state,
-                    val_time_limit=cfg.val_time_limit,
                 )
                 # Set model back to training mode after validation
                 vla.train()
